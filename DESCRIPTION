@@ -1,0 +1,29 @@
+Package: TBtyper
+Title: MTBC Phylotyping from WGS SNP genotypes
+Version: 0.0.1
+Authors@R: 
+    person(given = "Jacob",
+           family = "Munro",
+           role = c("aut", "cre"),
+           email = "munro.j@wehi.edu.au",
+           comment = c(ORCID = "0000-0002-2751-0989"))
+Description: MTBC Phylotyping from WGS SNP genotypes.
+License: GPLv2
+Encoding: UTF-8
+LazyData: true
+ByteCompile: true
+Imports:
+    GenomicRanges,
+    dplyr,
+    furrr,
+    future,
+    ggplot2,
+    magrittr,
+    purrr,
+    rlang,
+    rmarkdown,
+    stringr,
+    tidyr
+RoxygenNote: 6.1.1
+Suggests: 
+    testthat (>= 2.1.0)
