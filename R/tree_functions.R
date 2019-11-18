@@ -1,8 +1,6 @@
-# test if object is phylo
-is_phylo <- function(x) {
+# TODO
+#   tidy functions, add imports, remove junk
 
-  'phylo' %in% class(x)
-}
 
 # add tbl_tree to class of dataframe
 #' @importFrom rlang is_integerish is_character
@@ -82,70 +80,52 @@ condense_phylo <- function(phylo, nodes_rm) {
     df2phylo()
 }
 
-
-
-# attach labels to nodes in phylo describe heirachy
-label_nodes_phylo <- function(phylo, sep = '.') {
-
-  in_tree <- as_tibble(phylo)
-
-  with(in_tree, {
-    root_node <- which(parent == node)
-    inner_node <- (seq_len(length(node)) > root_node)
-    label[root_node] <- '0'
-    label[inner_node] <- NA_character_
-    i <- which((parent == root_node) & (!node == root_node) & inner_node)
-    label[i] <- seq_along(i)
-    for (nd in which(inner_node)) {
-      which(node == nd)
-      i <- which((parent == nd) & inner_node)
-      label[i] <- str_c(label[match(nd, node)], seq_along(i), sep = '.')
-    }
-    tibble(parent = parent,
-           node = node,
-           branch.length = branch.length,
-           label = label)
-  }) %>% {
-    class(.) <- c('tbl_tree', class(.));
-    as.phylo(.)
-  }
-}
-
-
-
-# return tibble with new labels
-label_phylo <- function(phylo, node_labels,
-                           sep = '|',
-                           anc_sep = '-A',
-                           root_label = 'root') {
+# return phylo with new labels
+#' @importFrom rlang is_integerish is_dictionaryish is_string
+#' @importFrom dplyr filter select mutate bind_rows slice
+#' @importFrom magrittr "%>%"
+#' @importFrom purrr map
+label_phylo <- function(phylo,
+                        node_labels = integer(0L),
+                        sep = '|',
+                        anc_sep = '-A',
+                        root_label = 'root') {
 
   stopifnot(is_phylo(phylo),
             is_integerish(node_labels) & is_dictionaryish(node_labels),
             all(node_labels %in% phylo$edge),
-            is_scalar_character(sep))
+            is_string(sep))
 
+  rn <- tidytree::rootnode(phylo)
+
+  if (! rn %in% node_labels) {
+    node_labels <- c(magrittr::set_names(rn, root_label), node_labels)
+  }
 
   in_tree <-
     as_tibble(phylo) %>%
     mutate(label_new = names(node_labels)[match(node, node_labels)],
+           children = map(node, function(nd) treeio::child(phylo, nd)),
            depth = n_ancestor(phylo, node),
-           nchild = n_child(phylo, node),
-           is_anc = (nchild == 1) & (! node %in% node_labels),
-           children = map(node, function(nd) Children(phylo, nd)))
+           nchild = lengths(children),
+           is_anc = (nchild == 1) & (! node %in% node_labels))
 
   anc <-
     filter(in_tree, is_anc) %>%
-    mutate(child = map_int(node, ~ Children(phylo, .))) %>%
-    with({
-      level = rep(1L, length(node))
-      descendent = child
-      for (dp in unique(sort(setdiff(depth, max(depth)), T))) {
-        ii <- which(depth == dp) %>% purrr::keep(~ child[.] %in% node)
-        level[ii] <- level[match(child[ii], node)] + 1L
-        descendent[ii] <- descendent[match(child[ii], node)]
-      }
-      tibble(label_old = label, level = level, descendent = descendent)
-    })
+    mutate(child = unlist(children)) %>%
+    { `if`(nrow(.) > 0,
+           with(., {
+             level = rep(1L, length(node))
+             descendent = child
+             for (dp in unique(sort(setdiff(depth, max(depth)), T))) {
+               ii <- which(depth == dp) %>% purrr::keep(~ child[.] %in% node)
+               level[ii] <- level[match(child[ii], node)] + 1L
+               descendent[ii] <- descendent[match(child[ii], node)]
+             }
+             tibble(label_old = label, level = level, descendent = descendent)
+           }),
+           tibble(label_old = character(), level = integer(), descendent = integer()))
+    }
 
   new_labs <-
     condense_phylo(phylo, filter(in_tree, is_anc) %>% pull(node)) %>%
@@ -214,32 +194,6 @@ parent_lab_by_lab <- function(phylo, node_lab) {
     })
 }
 
-# generic constructor for a phylo object - (ape does not provide one)
-# based on ape::read.tree() and ape:::.treeBuild()
-phylo_ <- function(tip_labels,
-                  node_labels,
-                  edge_matrix,
-                  edge_lengths,
-                  root_edge = NULL) {
-  # rules for node numbers:
-  # 1:n_tip are tips
-  # ? parent is n_tip + 1 ?
-  stopifnot(ncol(edge_matrix) == 2)
-
-  phy <- list(
-    edge = edge_matrix,
-    edge.length = edge_lengths,
-    Nnode = length(node_labels),
-    node.label = node_labels,
-    tip.label = tip_labels
-  )
-  if (!is.null(root_edge)) { phy$root.edge = root_edge }
-
-  class(phy) <- "phylo"
-  attr(phy, "order") <- "cladewise"
-  phy
-}
-
 # recursive function to count ancestors
 n_ancestor <- function(phylo, node) {
 
@@ -272,17 +226,12 @@ n_offspring <- function(phylo, node) {
   vapply(node, n_offspring_rec, integer(1))
 }
 
+# count number of children
 n_child <- function(phylo, node) {
 
-  left_join(
-    tibble(node = node),
-    tibble(node = phylo$edge[,1]) %>%
-      group_by(node) %>%
-      count(),
-    'node') %>%
-    mutate(n = replace_na(n, 0L)) %>%
-    pull(n)
-
+  parent <- phylo$edge[, 1]
+  parent <- parent[parent %in% node]
+  vapply(node, function(n) sum(parent == n), integer(1L))
 }
 
 # recursive function to number of tips bellow a node

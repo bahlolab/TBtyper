@@ -1,3 +1,12 @@
 *.RData
 .Rhistory
 .Rproj.user
+  if (FALSE) {
+    panel <- read_rds('test_data/phylomix_panel.rds')
+    phylo <- panel$phylo
+    phylotypes <- panel$phylotypes
+    b_count <- read_rds('test_data/b_count.rds')
+    depth <- read_rds('test_data/depth.rds')
+    fun <- 'phylomatch'
+    dots <- list(search_span = Inf)
+make_tb_phylotype_data.R
