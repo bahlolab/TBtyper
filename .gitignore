@@ -10,3 +10,4 @@
     fun <- 'phylomatch'
     dots <- list(search_span = Inf)
 make_tb_phylotype_data.R
+test/*

@@ -5,7 +5,8 @@
 #' @importFrom dplyr inner_join distinct group_by ungroup as_tibble mutate filter
 #' @importFrom magrittr "%>%"
 get_allele_counts_gds <- function(gds,
-                                  var_info = get_var_info()) {
+                                  var_info = get_var_info(),
+                                  verbose = FALSE) {
   # check_args
   stopifnot(is_gds(gds),
             is.data.frame(var_info),
@@ -15,7 +16,7 @@ get_allele_counts_gds <- function(gds,
   var_id <- seqGetData(gds, 'variant.id')
   sam_id <- seqGetData(gds, 'sample.id')
   gr <- with(var_info, GenomicRanges::GRanges(chr, IRanges::IRanges(start = pos, width = 1L)))
-  seqSetFilter(gds, gr)
+  seqSetFilter(gds, gr, verbose = verbose)
 
   var_match <-
     variantInfo(gds, expanded = TRUE) %>%
@@ -28,8 +29,8 @@ get_allele_counts_gds <- function(gds,
     distinct()
 
   # extract Allele Counts
-  seqSetFilter(gds, variant.id = var_match$variant.id, sample.id = sam_id)
-  AD <- gds_get_AD_parallel(gds)$data
+  seqSetFilter(gds, variant.id = var_match$variant.id, sample.id = sam_id, verbose = verbose)
+  AD <- gds_get_AD_parallel(gds, verbose = verbose)$data
   ri <- with(var_match, cumsum(num_alt + 1) - (num_alt))
   ai <- (ri + var_match$allele.index) %>% na.omit() %>% c()
 
@@ -46,7 +47,7 @@ get_allele_counts_gds <- function(gds,
 
 #' @importFrom magrittr "%>%"
 #' @importFrom SeqArray seqGetData seqSetFilter
-gds_get_AD_parallel <- function(gds) {
+gds_get_AD_parallel <- function(gds, verbose = FALSE) {
 
   fn = gds$filename
   var.id = seqGetData(gds, 'variant.id')
@@ -58,7 +59,7 @@ gds_get_AD_parallel <- function(gds) {
     { .[lengths(.) > 0 ] } %>%
     furrr::future_map( ~{
       gds <- SeqArray::seqOpen(fn, allow.duplicate = T)
-      seqSetFilter(gds, variant.id = ., sample.id = sam.id)
+      seqSetFilter(gds, variant.id = ., sample.id = sam.id, verbose = verbose)
       seqGetData(gds, 'annotation/format/AD')
     }) %>%
     purrr::reduce(function(x, y) {

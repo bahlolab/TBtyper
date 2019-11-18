@@ -80,6 +80,51 @@ condense_phylo <- function(phylo, nodes_rm) {
     df2phylo()
 }
 
+#' @importFrom dplyr mutate rowwise ungroup n slice pull group_by select left_join distinct
+#' @importFrom tidyr gather
+#' @importFrom magrittr "%>%"
+collapse_phylotypes <- function(phylo, geno_sub, min_dist = 1L, include_dist = TRUE) {
+
+  stopifnot(
+    is_integer(geno_sub) && is.matrix(geno_sub) && max(geno_sub, na.rm = T) == 1L && min(geno_sub, na.rm = T) == 0L,
+    is_phylo(phylo),
+    setequal(rownames(geno_sub), c(phylo$tip.label, phylo$node.label)),
+    is_scalar_integerish(min_dist) && min_dist > 0L)
+
+  phylo_dist <-
+    tidytree::as_tibble(phylo) %>%
+    mutate(parent_label = node_to_label(phylo, parent)) %>%
+    rowwise() %>%
+    mutate(branch.length = sum(geno_sub[label, ] != geno_sub[parent_label, ], na.rm = TRUE)) %>%
+    ungroup() %>%
+    mutate(branch.length = replace(branch.length, node == parent, NA)) %>%
+    as_tbl_tree() %>%
+    tidytree::as.phylo()
+
+  node_dist <- ape::dist.nodes(phylo_dist)
+
+  nodes_ident <-
+    which(node_dist < min_dist & lower.tri(node_dist), arr.ind = T) %>%
+    as_tibble() %>%
+    mutate(id = seq_len(n())) %>%
+    gather(row, col, key = 'key', value = 'node') %>%
+    select(-key) %>%
+    { left_join(., select(., node) %>% distinct() %>% mutate(depth = n_ancestor(phylo, node)), 'node')  } %>%
+    group_by(id) %>%
+    arrange(desc(depth), node) %>%
+    slice(1) %>%
+    ungroup() %>%
+    pull(node) %>%
+    unique()
+
+  phylo_r1 <- `if`(include_dist, phylo_dist, phylo)
+  phylo_r2 <- `if`(length(nodes_ident) > 0L,
+                   condense_phylo(phylo_r1, nodes_ident),
+                   phylo_r1)
+
+  return(phylo_r2)
+}
+
 # return phylo with new labels
 #' @importFrom rlang is_integerish is_dictionaryish is_string
 #' @importFrom dplyr filter select mutate bind_rows slice
