@@ -14,9 +14,9 @@ fit_phylotypes <- function(allele_counts,
                            min_mix_prop = 0.005,
                            min_depth = 10L,
                            max_depth = 250L,
-                           error_rate = 0.005,
+                           error_rate = 0.006,
                            max_p_val = 0.001,
-                           search_span = 5L,
+                           search_span = 3L,
                            optimise_phylotypes = TRUE,
                            return_search = TRUE
                            ) {
@@ -86,6 +86,7 @@ fit_phylotypes <- function(allele_counts,
 }
 
 #' @importFrom tidyr replace_na
+#' @importFrom magrittr "%<>%"
 #' @importFrom dplyr inner_join distinct group_by ungroup as_tibble mutate filter if_else bind_rows
 phylomix_sample <- function(phylo,
                             gts,
@@ -136,10 +137,14 @@ phylomix_sample <- function(phylo,
   # arbitrary threshold on min sites
   if(nrow(data) < 10) {  return(tibble(note = 'insufficient data'))  }
 
-  phy_match <- phylomatch_sample(phylo,
-                                 data = data,
-                                 error_rate = error_rate,
-                                 search_span = search_span)
+  # phy_match <- phylomatch_sample(phylo,
+  #                                data = data,
+  #                                error_rate = error_rate,
+  #                                search_span = search_span)
+
+  phy_match <- match_first(phylo,
+                           data = data,
+                           error_rate = error_rate)
 
   res <-
     filter(phy_match, (p_val <= max_p_val) | (all(p_val > max_p_val, na.rm=T))) %>%
@@ -165,15 +170,13 @@ phylomix_sample <- function(phylo,
     }
 
     hap_mix <-
-      phylomix_match_next(
+      match_next(
         phylo,
         nodes_0 = res$node[[i]],
-        lh_0 = res$likelihood[i],
         fit_0 = res$fit[[i]],
         data = data,
         error_rate = error_rate,
-        max_p_val = max_p_val,
-        search_span = search_span)
+        delta = min_mix_prop)
 
     if (min(hap_mix$fit[[1]]) < min_mix_prop) { break }
 
@@ -199,101 +202,138 @@ phylomix_sample <- function(phylo,
 
 #' @importFrom purrr map map2_dbl map_dbl
 #' @importFrom dplyr inner_join distinct group_by ungroup as_tibble mutate filter
-phylomatch_sample <- function(phylo,
-                              data,
-                              error_rate = 0.005,
-                              max_p_val = 0.001,
-                              search_span = 3L) {
+#' @importFrom treeio parent rootnode
+match_first <- function(phylo,
+                        data,
+                        error_rate = 0.005) {
 
 
   if (FALSE) {
     error_rate = 0.005
-    max_p_val = 0.001
-    search_span = 3L
     data <- readRDS('./test/data.rds')
     phylo <- readRDS('./test/phylo_sub.rds')
   }
 
-  data$included <- FALSE
+  site_lh0 <- with(data, binom_likelihood(bac, dp, 0, err_01 = error_rate, by_site = TRUE))
+  site_lh1 <- with(data, binom_likelihood(bac, dp, 1, err_01 = error_rate, by_site = TRUE))
+  rn <- rootnode(phylo)
+  rn_lh = sum(if_else(data$gts[, rn] == 1, site_lh1, site_lh0))
 
-  node_dist <- ape::dist.nodes(phylo)
-
-  phy_tbl <-
-    as_tibble(phylo) %>%
-    mutate(likelihood = 0, p_val = NA_real_, stat = NA_real_, df = NA_integer_, active = F, expanded = F)
-
-  rn <- treeio::rootnode(phylo)
-  # queue of nodes to explore
-  queue <- c(rn, get_children(phylo, rn, depth = search_span))
-
-  while(length(queue) > 0L) {
-    node <- queue[1L]
-    queue <- queue[-1L]
-    # message('node = ', node, ' (', node_to_label(phylo, node), ')')
-
-    children <- get_children(phylo, node, 1L)
-
-    phy_tbl$active[node] <- T
-
-    if (length(children) > 0L) {
-      # update likelihoods
-      ch_vars <- map(children, ~ which(data$gts[, node] != data$gts[, .]))
-      data$included[unlist(ch_vars)] <- T
-
-      likelihood_in <-
-        map2_dbl(children, ch_vars, function(ch, vi) {
-          with(data, binom_likelihood(bac[vi], dp[vi], gts[vi, ch], error_rate))
-        })
-
-      likelihood_out  <-
-        map_dbl(ch_vars, function(vi) {
-          with(data, binom_likelihood(bac[vi], dp[vi], gts[vi, node], error_rate))
-        })
-
-      likelihood_branch <-
-        map_dbl(seq_along(children), function(ch) {
-          likelihood_in[ch] + sum(likelihood_out[-ch])
-        })
-
-      phy_tbl$likelihood[children] <- { phy_tbl$likelihood[node] + likelihood_branch }
-      phy_tbl$likelihood[phy_tbl$active] <- { phy_tbl$likelihood[phy_tbl$active] + sum(likelihood_out) }
-    }
-
-    phy_tbl$active[children] <- T
-    phy_tbl$expanded[node] <- T
-
-    # calculate p_val based on lr vs parent node
-    if (node != rn) {
-      parent <- parent(phylo, node)
-      phy_tbl$df[node] <- with(data, sum(gts[,parent] != gts[, node]))
-      phy_tbl$stat[node] <- -2 * ( phy_tbl$likelihood[parent] - phy_tbl$likelihood[node] )
-      phy_tbl$p_val[node] <- pchisq(phy_tbl$stat[node], phy_tbl$df[node], lower.tail = F)
-    }
-
-    if (length(queue) == 0L) {
-      # add additinal nodes to queue with search_span of node_ML
-      node_ML <-
-        filter(phy_tbl, active) %>%
-        arrange(desc(likelihood)) %>%
-        slice(1) %>% pull(node)
-      queue <-
-        which(node_dist[node_ML, ] <= search_span) %>%
-        setdiff(which(phy_tbl$expanded)) %>%
-        { .[order(n_ancestor(phylo, .))] }
-    }
-  }
-  # calculate likelihood over remaining sites
-  rem <- which(!data$included)
-  lh_rem <- with(data, binom_likelihood(bac[rem], dp[rem], gts[rem, rn], error_rate))
-  phy_tbl$likelihood <- phy_tbl$likelihood + lh_rem
-
-  # retrun table of searched nodes with likelihoods
   result <-
-    filter(phy_tbl, expanded) %>%
+    as_tibble(phylo) %>%
+    mutate(data = map2(node, parent,  function(node, parent) {
+      tibble(likelihood = sum(if_else(data$gts[, node] == 1, site_lh1, site_lh0))) %>%
+        { `if`(node != parent,
+               mutate(.,
+                      df = with(data, sum(gts[, rn] != gts[, node])),
+                      stat = -2 * ( rn_lh - likelihood ),
+                      p_val = pchisq(stat, df, lower.tail = F)),
+               .)
+        }
+    })) %>%
+    unnest(data) %>%
     select(node,  phylotype = label, likelihood, p_val = p_val, stat, df) %>%
     arrange(desc(likelihood), p_val)
 
   return(result)
+}
+
+#' @importFrom purrr map map2_dbl map_dbl
+#' @importFrom dplyr inner_join distinct group_by ungroup as_tibble mutate filter
+#' @importFrom treeio parent rootnode
+#' @importFrom phangorn Ancestors Descendants
+match_next <- function(phylo,
+                       nodes_0,
+                       fit_0,
+                       data,
+                       error_rate = 0.005,
+                       delta = 0.005,
+                       exclude_ancestors = TRUE,
+                       exclude_descendants = TRUE) {
+
+
+
+  mod_0 <- data$gts[, nodes_0, drop=FALSE] %>% { colSums(t(.) * fit_0) }
+  lh_0 <-  with(data, binom_likelihood(bac, dp, mod_0, err_01 = error_rate))
+
+  mod_0_delta_pos <- pmin(mod_0 + delta, 1)
+  mod_0_delta_neg <- pmax(mod_0 - delta, 0)
+
+  site_lh_delta_pos <- with(data, binom_likelihood(bac, dp, mod_0_delta_pos, err_01 = error_rate, by_site = TRUE))
+  site_lh_delta_neg <- with(data, binom_likelihood(bac, dp, mod_0_delta_neg, err_01 = error_rate, by_site = TRUE))
+
+  rn <- rootnode(phylo)
+  exclude <- c(rn, nodes_0)
+  if (exclude_ancestors) {
+    exclude <- union(exclude, unlist(Ancestors(phylo, nodes_0, type = 'all')))
+  }
+  if (exclude_descendants) {
+    exclude <- union(exclude, unlist(Descendants(phylo, nodes_0, type = 'all')))
+  }
+
+  result <-
+    as_tibble(phylo) %>%
+    filter(! node %in% exclude) %>%
+    mutate(likelihood = map_dbl(node, function(node) {
+      sum(if_else(data$gts[, node] == 1, site_lh_delta_pos, site_lh_delta_neg))
+    })) %>%
+    arrange(desc(likelihood)) %>%
+    slice(1) %>%
+    (function(x) {
+      node_set <- c(nodes_0, x$node)
+      fit <- data %>% select(baf, gts) %>% { .$gts <- .$gts[, node_set] ; . } %>% fit_mix_prop()
+      mod <- unname(data$gts[, node_set]) %>% { colSums(t(.) * fit ) }
+      x %>% mutate(likelihood = with(data, binom_likelihood(bac, dp, mod, err_01 = error_rate)),
+                   df = sum(mod != mod_0),
+                   stat = -2 * ( lh_0 - likelihood ),
+                   p_val = pchisq(stat, df, lower.tail = F),
+                   fit = list(fit))
+    }) %>%
+    select(node, phylotype = label, likelihood, p_val = p_val, stat, df, fit)
+
+  return(result)
+}
+
+# return vector of sites to flip for better fit
+# sites chosen from parents/children, whichever has the most sites
+optim_phylotype <- function(phylo, nodes, fit, data, error_rate) {
+
+  node <- nodes[length(nodes)]
+  nodes_0 <- setdiff(nodes, node)
+
+  rn <- treeio::rootnode(phylo)
+  adj <- c(get_children(phylo, node), parent(phylo, node))
+
+  adj_sites <- map_df(adj, ~ tibble(nd = ., site = which(data$gts[,. ] != data$gts[, node])))
+
+  res <-
+    data[adj_sites$site, ] %>%
+    mutate(site = adj_sites$site,
+           ht = gts[,node],
+           mod_0 = map_dbl(seq_len(n()), ~sum(c(gts[., nodes_0], 0) * fit)),
+           mod_1 = map_dbl(seq_len(n()), ~sum(c(gts[., nodes_0], 1) * fit))) %>%
+    mutate(mod_0 =  binom_likelihood(bac, dp, mod_0, error_rate, by_site = T),
+           mod_1 = binom_likelihood(bac, dp, mod_1, error_rate, by_site = T)) %>%
+    select(site, ht, mod_0, mod_1) %>%
+    left_join(adj_sites, 'site') %>%
+    gather(mod_0, mod_1, key = 'state', value = 'lh') %>%
+    mutate(state = str_remove(state, 'mod_') %>% as.integer()) %>%
+    group_by(site) %>%
+    arrange(desc(lh)) %>%
+    slice(1) %>%
+    ungroup() %>%
+    filter(ht != state) %>%
+    group_by(nd) %>%
+    summarise(site = list(site)) %>%
+    mutate(n_site = lengths(site)) %>%
+    arrange(desc(n_site)) %>%
+    slice(1)
+
+  if(nrow(res) > 1) {
+    unlist(res$site)
+  } else{
+    integer()
+  }
 }
 
 
@@ -382,44 +422,104 @@ phylomix_match_next <- function(phylo,
     arrange(desc(likelihood), p_val)
 }
 
-# return vector of sites to flip for better fit
-# sites chosen from parents/children, whichever has the most sites
-optim_phylotype <- function(phylo, nodes, fit, data, error_rate) {
+#' @importFrom purrr map map2_dbl map_dbl
+#' @importFrom dplyr inner_join distinct group_by ungroup as_tibble mutate filter
+#' @importFrom treeio parent rootnode
+phylomatch_sample <- function(phylo,
+                              data,
+                              error_rate = 0.005,
+                              max_p_val = 0.001,
+                              search_span = 3L) {
 
-  node <- nodes[length(nodes)]
-  nodes_0 <- setdiff(nodes, node)
 
-  rn <- rootnode(phylo)
-  adj <- c(get_children(phylo, node), parent(phylo, node))
-
-  adj_sites <- map_df(adj, ~ tibble(nd = ., site = which(data$gts[,. ] != data$gts[, node])))
-
-  res <-
-    data[adj_sites$site, ] %>%
-    mutate(site = adj_sites$site,
-           ht = gts[,node],
-           mod_0 = map_dbl(seq_len(n()), ~sum(c(gts[., nodes_0], 0) * fit)),
-           mod_1 = map_dbl(seq_len(n()), ~sum(c(gts[., nodes_0], 1) * fit))) %>%
-    mutate(mod_0 =  binom_likelihood(bac, dp, mod_0, error_rate, by_site = T),
-           mod_1 = binom_likelihood(bac, dp, mod_1, error_rate, by_site = T)) %>%
-    select(site, ht, mod_0, mod_1) %>%
-    left_join(adj_sites, 'site') %>%
-    gather(mod_0, mod_1, key = 'state', value = 'lh') %>%
-    mutate(state = str_remove(state, 'mod_') %>% as.integer()) %>%
-    group_by(site) %>%
-    arrange(desc(lh)) %>%
-    slice(1) %>%
-    ungroup() %>%
-    filter(ht != state) %>%
-    group_by(nd) %>%
-    summarise(site = list(site)) %>%
-    mutate(n_site = lengths(site)) %>%
-    arrange(desc(n_site)) %>%
-    slice(1)
-
-  if(nrow(res) > 1) {
-    unlist(res$site)
-  } else{
-    integer()
+  if (FALSE) {
+    error_rate = 0.005
+    max_p_val = 0.001
+    search_span = 3L
+    data <- readRDS('./test/data.rds')
+    phylo <- readRDS('./test/phylo_sub.rds')
   }
+
+  data$included <- FALSE
+
+  node_dist <- ape::dist.nodes(phylo)
+
+  phy_tbl <-
+    as_tibble(phylo) %>%
+    mutate(likelihood = 0, p_val = NA_real_, stat = NA_real_, df = NA_integer_, active = F, expanded = F)
+
+  rn <- treeio::rootnode(phylo)
+  # queue of nodes to explore
+  # queue <- c(rn, get_children(phylo, rn, depth = search_span))
+  queue <- seq_len(treeio::Nnode2(phylo))
+
+  while(length(queue) > 0L) {
+    node <- queue[1L]
+    queue <- queue[-1L]
+    # message('node = ', node, ' (', node_to_label(phylo, node), ')')
+
+    children <- get_children(phylo, node, 1L)
+
+    phy_tbl$active[node] <- T
+
+    if (length(children) > 0L) {
+      # update likelihoods
+      ch_vars <- map(children, ~ which(data$gts[, node] != data$gts[, .]))
+      data$included[unlist(ch_vars)] <- T
+
+      likelihood_in <-
+        map2_dbl(children, ch_vars, function(ch, vi) {
+          with(data, binom_likelihood(bac[vi], dp[vi], gts[vi, ch], error_rate))
+        })
+
+      likelihood_out  <-
+        map_dbl(ch_vars, function(vi) {
+          with(data, binom_likelihood(bac[vi], dp[vi], gts[vi, node], error_rate))
+        })
+
+      likelihood_branch <-
+        map_dbl(seq_along(children), function(ch) {
+          likelihood_in[ch] + sum(likelihood_out[-ch])
+        })
+
+      phy_tbl$likelihood[children] <- { phy_tbl$likelihood[node] + likelihood_branch }
+      phy_tbl$likelihood[phy_tbl$active] <- { phy_tbl$likelihood[phy_tbl$active] + sum(likelihood_out) }
+    }
+
+    phy_tbl$active[children] <- T
+    phy_tbl$expanded[node] <- T
+
+    # calculate p_val based on lr vs parent node
+    if (node != rn) {
+      parent <- parent(phylo, node)
+      phy_tbl$df[node] <- with(data, sum(gts[,parent] != gts[, node]))
+      phy_tbl$stat[node] <- -2 * ( phy_tbl$likelihood[parent] - phy_tbl$likelihood[node] )
+      phy_tbl$p_val[node] <- pchisq(phy_tbl$stat[node], phy_tbl$df[node], lower.tail = F)
+    }
+
+    if (length(queue) == 0L) {
+      # add additinal nodes to queue with search_span of node_ML
+      node_ML <-
+        filter(phy_tbl, active) %>%
+        arrange(desc(likelihood)) %>%
+        slice(1) %>% pull(node)
+      queue <-
+        which(node_dist[node_ML, ] <= search_span) %>%
+        setdiff(which(phy_tbl$expanded)) %>%
+        { .[order(n_ancestor(phylo, .))] }
+    }
+  }
+  # calculate likelihood over remaining sites
+  rem <- which(!data$included)
+  lh_rem <- with(data, binom_likelihood(bac[rem], dp[rem], gts[rem, rn], error_rate))
+  phy_tbl$likelihood <- phy_tbl$likelihood + lh_rem
+
+  # retrun table of searched nodes with likelihoods
+  result <-
+    filter(phy_tbl, expanded) %>%
+    select(node,  phylotype = label, likelihood, p_val = p_val, stat, df) %>%
+    arrange(desc(likelihood), p_val)
+
+  return(result)
 }
+

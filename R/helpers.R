@@ -30,8 +30,8 @@ binom_likelihood <- function(x, size, p, err_01=0.005, err_10 = err_01, by_site 
   stopifnot(
     is_integerish(x),
     is_integerish(size),
-    length(x) == length(p),
-    length(x) == length(p),
+    length(x) == length(size),
+    length(x) == length(p) || length(p) == 1L,
     is_proportion(p),
     is_scalar_proportion(err_01),
     is_scalar_proportion(err_10)

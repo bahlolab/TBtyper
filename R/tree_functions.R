@@ -438,12 +438,13 @@ get_anc_list_by_lab <- function(phylo, labels) {
 }
 
 ggtree_node_highlight <- function(phylo, labels) {
+  require(ggtree)
 
   as_tibble(phylo) %>%
     mutate(selected = label %in% labels,
            label = if_else(selected, label, NA_character_)) %>%
     as_tbl_tree() %>%
-    as.treedata() %>% {
+    treeio::as.treedata() %>% {
       ggtree(.) +
         geom_nodepoint(aes(col = label, subset = selected)) +
         geom_tippoint(aes(col = label, subset = selected)) +

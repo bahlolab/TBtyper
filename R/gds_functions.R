@@ -6,7 +6,8 @@
 #' @importFrom magrittr "%>%"
 get_allele_counts_gds <- function(gds,
                                   var_info = get_var_info(),
-                                  verbose = FALSE) {
+                                  verbose = FALSE,
+                                  alt_na_to_zero = TRUE) {
   # check_args
   stopifnot(is_gds(gds),
             is.data.frame(var_info),
@@ -34,8 +35,16 @@ get_allele_counts_gds <- function(gds,
   ri <- with(var_match, cumsum(num_alt + 1) - (num_alt))
   ai <- (ri + var_match$allele.index) %>% na.omit() %>% c()
 
+  RAC <- AD[, ri, drop = FALSE]
+  AAC <- AD[, ai, drop = FALSE]
+
+  if (alt_na_to_zero) {
+    AAC[is.na(AAC) & !is.na(RAC)] <- 0L
+  }
+
+
   allele_counts <-
-    array(c(AD[, ri, drop = FALSE],  AD[, ai, drop = FALSE]),
+    array(c(RAC, AAC),
           dim = c(length(sam_id), length(ri), 2),
           dimnames = list(sample = sam_id,
                           variant = var_match$variant_id,
