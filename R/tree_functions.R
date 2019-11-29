@@ -80,7 +80,7 @@ condense_phylo <- function(phylo, nodes_rm) {
     df2phylo()
 }
 
-#' @importFrom dplyr mutate rowwise ungroup n slice pull group_by select left_join distinct
+#' @importFrom dplyr mutate rowwise ungroup n slice pull group_by select left_join distinct arrange
 #' @importFrom tidyr gather
 #' @importFrom magrittr "%>%"
 collapse_phylotypes <- function(phylo, geno_sub, min_dist = 1L, include_dist = TRUE) {
@@ -91,15 +91,7 @@ collapse_phylotypes <- function(phylo, geno_sub, min_dist = 1L, include_dist = T
     setequal(rownames(geno_sub), c(phylo$tip.label, phylo$node.label)),
     is_scalar_integerish(min_dist) && min_dist > 0L)
 
-  phylo_dist <-
-    tidytree::as_tibble(phylo) %>%
-    mutate(parent_label = node_to_label(phylo, parent)) %>%
-    rowwise() %>%
-    mutate(branch.length = sum(geno_sub[label, ] != geno_sub[parent_label, ], na.rm = TRUE)) %>%
-    ungroup() %>%
-    mutate(branch.length = replace(branch.length, node == parent, NA)) %>%
-    as_tbl_tree() %>%
-    tidytree::as.phylo()
+  phylo_dist <- phylo_geno_dist(phylo, geno_sub, as_phylo = TRUE)
 
   node_dist <- ape::dist.nodes(phylo_dist)
 
@@ -123,6 +115,33 @@ collapse_phylotypes <- function(phylo, geno_sub, min_dist = 1L, include_dist = T
                    phylo_r1)
 
   return(phylo_r2)
+}
+
+#' @importFrom dplyr mutate rowwise ungroup n slice pull group_by select left_join distinct arrange
+#' @importFrom magrittr "%>%"
+phylo_geno_dist <- function(phylo, geno, as_phylo = FALSE) {
+  # check args
+  stopifnot(
+    is_integer(geno) && is.matrix(geno) && max(geno, na.rm = T) == 1L && min(geno, na.rm = T) == 0L,
+    is_phylo(phylo),
+    setequal(rownames(geno), c(phylo$tip.label, phylo$node.label)),
+    is_bool(as_phylo))
+
+  phylo_dist <-
+    tidytree::as_tibble(phylo) %>%
+    mutate(parent_label = node_to_label(phylo, parent)) %>%
+    rowwise() %>%
+    mutate(branch.length = sum(geno[label, ] != geno[parent_label, ], na.rm = TRUE)) %>%
+    ungroup() %>%
+    mutate(branch.length = replace(branch.length, node == parent, NA)) %>%
+    as_tbl_tree() %>%
+    tidytree::as.phylo()
+
+  if (as_phylo) {
+    return(phylo_dist)
+  } else {
+    return(ape::dist.nodes(phylo_dist))
+  }
 }
 
 # return phylo with new labels

@@ -83,7 +83,9 @@ fit_mix_prop <- function(data,
 
 }
 
-fit_proportions_QP <- function(delta, check_ident = F){
+fit_proportions_QP <- function(delta,
+                               check_ident = F){
+
   if (check_ident) {
     d <- dist(t(delta)) %>% as.matrix()
     ident <- which(d == 0 & lower.tri(d), arr.ind = T)[,1]

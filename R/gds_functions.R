@@ -5,9 +5,16 @@
 #' @importFrom dplyr inner_join distinct group_by ungroup as_tibble mutate filter
 #' @importFrom magrittr "%>%"
 get_allele_counts_gds <- function(gds,
-                                  var_info = get_var_info(),
+                                  var_info = NULL,
+                                  ref = c('h37rv', 'mrca'),
                                   verbose = FALSE,
                                   alt_na_to_zero = TRUE) {
+
+  if (is.null(var_info)) {
+    ref <- match.arg(ref)
+    var_info <- get_var_info(ref = ref)
+  }
+
   # check_args
   stopifnot(is_gds(gds),
             is.data.frame(var_info),
