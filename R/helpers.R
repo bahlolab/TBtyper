@@ -21,23 +21,25 @@ is_gds <- function(x) {
 
 
 #' @importFrom rlang is_scalar_double is_scalar_integer
-binom_likelihood <- function(x, size, p, err_01=0.005, err_10 = err_01, by_site = FALSE) {
+binom_likelihood <- function(x, size, p, err=0.005, by_site = FALSE) {
+  # force p between [0,1] allowing round errors
   if (! is_proportion(p)) {
     warning('values outside [0,1] detected\n')
     p[p < 0] <- 0
     p[p > 1] <- 1
   }
+  # check args
   stopifnot(
     is_integerish(x),
     is_integerish(size),
     length(x) == length(size),
     length(x) == length(p) || length(p) == 1L,
     is_proportion(p),
-    is_scalar_proportion(err_01),
-    is_scalar_proportion(err_10)
+    is_proportion(err),
+    length(err) == 1 || length(err) == length(x)
   )
-  p_ <- p * (1 - err_10) + (1 - p) * (err_01)
-  res <- dbinom(x, size, p_, log = TRUE)
+  pe <- p * (1 - err) + (1 - p) * (err)
+  res <- dbinom(x, size, pe, log = TRUE)
   if (by_site) {
     return(res)
   } else {
