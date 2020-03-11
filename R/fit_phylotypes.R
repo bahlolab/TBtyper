@@ -33,7 +33,7 @@ fit_phylotypes <- function(allele_counts,
   # check args
   stopifnot(
     is_integer(allele_counts) && is.array(allele_counts) && min(allele_counts, na.rm = T) >= 0L,
-    length(dim(allele_counts) == 3L) && dim(allele_counts)[3] == 2L && setequal(c('Ref', 'Alt'), dimnames(allele_counts)[[3]]),
+    length(dim(allele_counts)) == 3L && dim(allele_counts)[3] == 2L,
     is_integer(geno) && is.matrix(geno) && max(geno, na.rm = T) == 1L && min(geno, na.rm = T) == 0L,
     is_phylo(phylo),
     setequal(rownames(geno), c(phylo$tip.label, phylo$node.label)),
@@ -142,10 +142,10 @@ fit_sample <- function(phylo,
 
     # optimise previous phylotype
     if (optimise_phylotypes) {
-      optim_sites <- optim_phylotype(phylo, res$node[[i]], res$fit[[i]], data, error_rate)
+      optim_sites <- optim_phylotype(phylo, res$node[[i]], res$fit[[i]], data)
       data$gts[optim_sites, tail(res$node[[i]], 1)] %<>% { if_else(.==0L, 1L, 0L) }
       mod <- unname(data$gts[, res$node[[i]]]) %>% { colSums(t(.) * res$fit[[i]] ) }
-      res$likelihood[i] <- with(data, binom_likelihood(bac, dp, mod, error_rate))
+      res$likelihood[i] <- with(data, binom_likelihood(bac, dp, mod, err))
     }
 
     hap_mix <-
@@ -186,7 +186,7 @@ fit_sample <- function(phylo,
 #' @importFrom dplyr inner_join distinct group_by ungroup as_tibble mutate filter
 #' @importFrom treeio parent rootnode
 #' @importFrom tidyr unnest
-match_first <- function(phylo, data) {
+match_first <- function(phylo, data, tip_only = FALSE) {
 
   site_lh0 <- with(data, binom_likelihood(bac, dp, 0, err, by_site = TRUE))
   site_lh1 <- with(data, binom_likelihood(bac, dp, 1, err, by_site = TRUE))
@@ -202,6 +202,7 @@ match_first <- function(phylo, data) {
 
   result <-
     as_tibble(phylo) %>%
+    mutate(is_tip = treeio::isTip(phylo, node)) %>%
     mutate(data = map2(node, parent,  function(node, parent) {
       tibble(likelihood = sum(if_else(data$gts[, node] == 1, site_lh1, site_lh0))) %>%
         mutate(p_val = (sum(likelihood < pt_lh) + 1 ) / (ncol(data$pgts) + 1))
@@ -214,6 +215,7 @@ match_first <- function(phylo, data) {
         # }
     })) %>%
     unnest(data) %>%
+    { `if`(tip_only, filter(., is_tip), .) } %>%
     select(node,  phylotype = label, likelihood, p_val = p_val) %>%
     arrange(desc(likelihood), p_val)
 
@@ -236,7 +238,8 @@ match_next <- function(phylo,
                        optimise_maxiter = 500,
                        blas_threads = 2L,
                        min_rho = 0.90,
-                       max_p_val = 0.01) {
+                       max_p_val = 0.01,
+                       tip_only = FALSE) {
 
 
   RhpcBLASctl::blas_set_num_threads(blas_threads)
@@ -298,7 +301,8 @@ match_next <- function(phylo,
   result_1 <-
     as_tibble(phylo) %>%
     mutate(ancestors = map(node, ~ Ancestors(phylo, .)),
-           depth = lengths(ancestors)) %>%
+           depth = lengths(ancestors),
+           is_tip = treeio::isTip(phylo, node)) %>%
     mutate(data = map(node, function(node) {
       tibble(delta_i = seq_along(delta),
              likelihood = map_dbl(delta_i, function(i) {
@@ -318,6 +322,7 @@ match_next <- function(phylo,
     filter(! node %in% exclude,
            rho >= min_rho,
            likelihood > lh_last) %>%
+    { `if`(tip_only, filter(., is_tip), .) } %>%
     select(parent, node, label, delta_i, likelihood) %>%
     arrange(desc(likelihood)) %>%
     mutate(p_val = map2_dbl(likelihood, delta_i, function(lh, i) {
@@ -365,7 +370,7 @@ match_next <- function(phylo,
 #' @importFrom dplyr inner_join distinct group_by ungroup as_tibble mutate filter
 #' @importFrom stringr str_remove
 #' @importFrom tidyr gather
-optim_phylotype <- function(phylo, nodes, fit, data, error_rate) {
+optim_phylotype <- function(phylo, nodes, fit, data) {
 
   node <- nodes[length(nodes)]
   nodes_last <- setdiff(nodes, node)
@@ -381,8 +386,8 @@ optim_phylotype <- function(phylo, nodes, fit, data, error_rate) {
            ht = gts[,node],
            mod_last = map_dbl(seq_len(n()), ~sum(c(gts[., nodes_last], 0) * fit)),
            mod_1 = map_dbl(seq_len(n()), ~sum(c(gts[., nodes_last], 1) * fit))) %>%
-    mutate(mod_last =  binom_likelihood(bac, dp, mod_last, error_rate, by_site = T),
-           mod_1 = binom_likelihood(bac, dp, mod_1, error_rate, by_site = T)) %>%
+    mutate(mod_last =  binom_likelihood(bac, dp, mod_last, err, by_site = T),
+           mod_1 = binom_likelihood(bac, dp, mod_1, err, by_site = T)) %>%
     select(site, ht, mod_last, mod_1) %>%
     left_join(adj_sites, 'site') %>%
     gather(mod_last, mod_1, key = 'state', value = 'lh') %>%
