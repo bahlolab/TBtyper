@@ -87,7 +87,7 @@ fit_phylotypes <- function(allele_counts,
 
 #' @importFrom tidyr replace_na
 #' @importFrom magrittr "%<>%"
-#' @importFrom dplyr inner_join distinct group_by ungroup as_tibble mutate filter if_else bind_rows tibble
+#' @importFrom dplyr inner_join distinct group_by ungroup as_tibble mutate filter if_else bind_rows tibble first
 fit_sample <- function(phylo,
                        gts,
                        pgts,
@@ -99,11 +99,13 @@ fit_sample <- function(phylo,
                        max_p_val,
                        optimise_phylotypes = FALSE,
                        optimise_fit = FALSE,
+                       optimise_radius = 50L,
                        min_sites = 1000L) {
 
   data <-
     # bac = b-allele count, dp = depth, gts = phylotype genotypes, pgts = permutation genotypes
-    tibble(bac = sm_allele_counts[,'Alt'],
+    tibble(variant = rownames(sm_allele_counts),
+           bac = sm_allele_counts[,'Alt'],
            dp = rowSums(sm_allele_counts),
            baf = bac / dp,
            gts = gts,
@@ -148,7 +150,7 @@ fit_sample <- function(phylo,
       res$likelihood[i] <- with(data, binom_likelihood(bac, dp, mod, err))
     }
 
-    hap_mix <-
+    res_mix <-
       match_next(
         phylo = phylo,
         nodes_last = res$node[[i]],
@@ -159,10 +161,20 @@ fit_sample <- function(phylo,
         max_p_val = max_p_val)
 
     res <-
-      hap_mix %>%
+      res_mix %>%
       mutate(node = list(c(res$node[[i]], node)),
              phylotype = list(c(res$phylotype[[i]], phylotype))) %>%
       { bind_rows(res, .) }
+
+
+    if (FALSE) {
+      node <- first(res$node[[i]])
+      phy_dist <- ape::dist.nodes(phylo)
+      alts <- setdiff(which(phy_dist[node,] < optimise_radius), node)
+      opt_match <- optimise_match(phylo = phylo,
+                                  data = data,
+                                  node = first(res$node[[i]]))
+    }
 
     i <- i + 1L
     mod_last <- data$gts[, res$node[[i-1]], drop=FALSE] %>% { colSums(t(.) * res$fit[[i-1]]) }
@@ -218,6 +230,48 @@ match_first <- function(phylo, data, tip_only = FALSE) {
     { `if`(tip_only, filter(., is_tip), .) } %>%
     select(node,  phylotype = label, likelihood, p_val = p_val) %>%
     arrange(desc(likelihood), p_val)
+
+  return(result)
+}
+
+#' @importFrom purrr map map_dbl pmap_dbl map2_dbl
+#' @importFrom dplyr inner_join distinct group_by ungroup as_tibble mutate filter summarise
+#' @importFrom treeio parent rootnode
+#' @importFrom phangorn Ancestors Descendants
+score_next <- function(phylo, data, nodes_fixed, fit) {
+
+  stopifnot(is_phylo(phylo),
+            is.data.frame(data),
+            is_integerish(nodes_fixed),
+            is_double(fit) && all(fit >= 0 | fit <= 1) && (abs(1 - sum(fit)) < 2e-10),
+            length(fit) == 1 + length(nodes_fixed))
+
+  # calculate sitewise marginal likelihoods for gt=0 and gt=1
+  site_model_0 <- cbind(data$gts[, current_nodes, drop=FALSE], 0) %>% { colSums(t(.) * c(fit)) }
+  site_lh_0 <- with(data, binom_likelihood(bac, dp, site_model_0, err, by_site = TRUE))
+
+  site_model_1 <- cbind(data$gts[, current_nodes, drop=FALSE], 1) %>% { colSums(t(.) * c(fit)) }
+  site_lh_1 <- with(data, binom_likelihood(bac, dp, site_model_1, err, by_site = TRUE))
+
+  # permutation test likelihoods
+  perm_lhs <- map_dbl(seq_len(ncol(data$pgts)),
+                      ~ sum(if_else(data$pgts[, .] == 1, site_lh_1, site_lh_0)))
+
+  # score likelihoods for all nodes
+  result <-
+    as_tibble(phylo) %>%
+    mutate(ancestors = map(node, ~ Ancestors(phylo, .)),
+           depth = lengths(ancestors),
+           lh = map_dbl(node, ~ sum(if_else(data$gts[, .] == 1, site_lh_1, site_lh_0)))) %>%
+    (function(x) {
+      mutate(x, rho = map_dbl(ancestors, function(anc) {
+        filter(x, node %in% anc) %>%
+          with(suppressWarnings(cor(depth, lh, method = 'spearman')))
+      }))
+    }) %>%
+    mutate(p_val = map_dbl(lh, ~ (sum(. < perm_lhs, na.rm = T) + 1) / (length(perm_lhs) + 1))) %>%
+    arrange(desc(lh), desc(rho), p_val) %>%
+    select(node, phylotype = label, likelihood = lh, rho, p_val = p_val)
 
   return(result)
 }
@@ -364,6 +418,7 @@ match_next <- function(phylo,
 
   return(result_2)
 }
+
 
 # return vector of sites to flip for better fit
 # sites chosen from parents/children, whichever has the most sites

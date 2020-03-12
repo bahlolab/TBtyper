@@ -1,14 +1,14 @@
 
 #' @export
-#' @importFrom SeqArray seqGetData seqSetFilter
+#' @importFrom SeqArray seqGetData seqSetFilter seqNumAllele
 #' @importFrom SeqVarTools variantInfo
-#' @importFrom dplyr inner_join distinct group_by ungroup as_tibble mutate filter arrange
+#' @importFrom dplyr inner_join distinct group_by ungroup as_tibble mutate filter arrange rename
 #' @importFrom magrittr "%>%"
 get_allele_counts_gds <- function(gds,
                                   var_info = NULL,
                                   ref = c('h37rv', 'mrca'),
                                   verbose = FALSE,
-                                  na_to_zero = TRUE) {
+                                  max_ext_freq = 0.25) {
 
   if (is.null(var_info)) {
     ref <- match.arg(ref)
@@ -18,7 +18,8 @@ get_allele_counts_gds <- function(gds,
   # check_args
   stopifnot(is_gds(gds),
             is.data.frame(var_info),
-            setequal(c('variant_id', 'chr', 'pos', 'ref', 'alt'), colnames(var_info)))
+            setequal(c('variant_id', 'chr', 'pos', 'ref', 'alt'), colnames(var_info)),
+            is_scalar_double(max_ext_freq) && max_ext_freq >= 0 && max_ext_freq <= 1)
 
   # find matching sites in gds
   var_id <- seqGetData(gds, 'variant.id')
@@ -32,11 +33,11 @@ get_allele_counts_gds <- function(gds,
     left_join(tibble(variant.id = seqGetData(gds, 'variant.id'),
                      num_allele = seqNumAllele(gds)),
               'variant.id') %>%
-    inner_join(dplyr::rename(var_info, target = alt), by = c('chr', 'pos', 'ref')) %>%
+    inner_join(rename(var_info, target = alt), by = c('chr', 'pos', 'ref')) %>%
     (function(x) {
       bind_rows(
-        filter(x, allele.index == 1) %>% mutate(allele.index = 0) %>% dplyr::rename(allele = ref) %>% select(-alt),
-        dplyr::rename(x, allele = alt) %>% select(-ref)
+        filter(x, allele.index == 1) %>% mutate(allele.index = 0) %>% rename(allele = ref) %>% select(-alt),
+        rename(x, allele = alt) %>% select(-ref)
       )
     }) %>%
     arrange(variant.id, allele.index) %>%
@@ -46,7 +47,12 @@ get_allele_counts_gds <- function(gds,
     spread(key = allele, value = allele.index) %>%
     arrange(variant.id) %>%
     mutate(ref.index = 1 + cumsum(num_allele) - num_allele,
-           alt.index = ref.index + alt)
+           alt.index = ref.index + alt) %>%
+    mutate(., ext.index = purrr::pmap(., function(num_allele, ref.index, alt.index, ...) {
+      `if`(num_allele <= 2,
+           integer(0),
+           setdiff(seq.int(from = ref.index + 1, to = ref.index + num_allele -1), alt.index))
+    }))
 
   # extract Allele Counts
   seqSetFilter(gds, variant.id = unique(var_index$variant.id), sample.id = sam_id, verbose = verbose)
@@ -54,10 +60,17 @@ get_allele_counts_gds <- function(gds,
 
   ref_ac <- AD[, var_index$ref.index, drop = FALSE]
   alt_ac <- AD[, var_index$alt.index, drop = FALSE]
+  ext_ac <-
+    vapply(seq_len(nrow(ref_ac)),
+           function(i) purrr::map_int(var_index$ext.index, ~ as.integer(sum(AD[i, .], na.rm = T))),
+           integer(ncol(ref_ac))) %>% t()
 
-  if (na_to_zero) {
-    alt_ac[is.na(alt_ac) & !is.na(ref_ac)] <- 0L
-  }
+
+  alt_ac[is.na(alt_ac)] <- 0L
+  alt_ac[is.na(ref_ac)] <- NA_integer_
+  flt <- which(alt_ac + ref_ac <= ext_ac / max_ext_freq)
+  ref_ac[flt] <- NA_integer_
+  alt_ac[flt] <- NA_integer_
 
   allele_counts <-
     array(c(ref_ac, alt_ac),
