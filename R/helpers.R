@@ -19,6 +19,21 @@ is_gds <- function(x) {
   inherits(x, "SeqVarGDSClass")
 }
 
+#' @importFrom rlang is_double
+force_to_interval <- function(x, min_val=0, max_val=1) {
+  stopifnot(is_double(x))
+  x[x < min_val] <- min_val
+  x[x > max_val] <- max_val
+  return(x)
+}
+
+#' @importFrom rlang is_double is_scalar_double
+c_spike_in <- function(p0, p1) {
+  stopifnot(is_double(p0),
+            is_scalar_double(p1))
+  return(c(p0 * (1-p1), p1))
+}
+
 
 #' @importFrom rlang is_scalar_double is_scalar_integer
 binom_likelihood <- function(x, size, p, err=0.005, by_site = FALSE) {
@@ -45,6 +60,11 @@ binom_likelihood <- function(x, size, p, err=0.005, by_site = FALSE) {
   } else {
     return(sum(res, na.rm=TRUE))
   }
+}
+
+#' @importFrom phangorn Ancestors Descendants
+anc_and_desc <- function(phylo, node) {
+  unlist(c(Ancestors(phylo, node), unlist(Descendants(phylo, node))))
 }
 
 #' @importFrom dplyr bind_cols filter mutate select starts_with
@@ -126,3 +146,29 @@ fit_proportions_QP <- function(delta,
   }
   return(sol)
 }
+
+# all pairwise interger combinations
+comb2_int <- function(x, names = c('a', 'b')) {
+  if (length(x) == 1) {
+    n <- x
+  } else {
+    n <- length(x)
+  }
+  n <- as.integer(n)
+  stopifnot(n > 1)
+  dplyr::tibble( a = rep(seq_len(n-1), seq.int(n-1, 1)) ) %>%
+    dplyr::mutate(
+      b = {
+        i <- seq_along(a) + 1
+        o <- c(0, cumsum((n-2):1))
+        (i - o[a]) %>% as.integer() }) %>%
+    {
+      if (length(x) == 1) {
+        .
+      } else {
+        dplyr::mutate(., a = x[a], b = x[b])
+      }
+    } %>%
+    magrittr::set_colnames(names)
+}
+
