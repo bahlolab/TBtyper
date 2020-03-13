@@ -309,8 +309,8 @@ score_phy_mix <- function(phylo, data, nodes_fixed = integer(0), fit = 1) {
 optim_phy_mix <- function(data,
                           nodes,
                           fit = NULL,
-                          resolution = 10000L,
-                          max_iter = 500L) {
+                          resolution = 5000L,
+                          max_iter = 1000L) {
 
   stopifnot(is.data.frame(data),
             is_integer(nodes) && length(nodes) > 1,
@@ -375,5 +375,7 @@ optim_phy_mix <- function(data,
       coeff <- coeff / 2
     }
   }
-  return(list(fit = top_fit / resolution, likelihood = top_lh))
+  return(list(fit = top_fit / resolution,
+              likelihood = top_lh,
+              n_iter = n_iter))
 }
