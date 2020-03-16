@@ -10,15 +10,26 @@ fit_phylotypes <- function(allele_counts,
                            phylo = NULL,
                            geno = NULL,
                            ref = c('h37rv', 'mrca'),
-                           max_phylotypes = 3L,
+                           max_phylotypes = 5L,
                            min_mix_prop = 0.005,
                            min_depth = 50L,
                            max_depth = 250L,
-                           max_p_val = 0.005,
+                           max_p_val_perm = 0.001,
+                           max_p_val_lrt = 0.001,
+                           min_rho = 0.90,
+                           spike_in_p = 0.01,
+                           reoptimise = TRUE,
+                           reoptimise_max_iter = 5L,
                            optimise_phylotypes = FALSE,
                            optimise_fit = FALSE,
                            min_sites = 1000L,
-                           n_perm = 999L
+                           n_perm = 1000L,
+                           exclude_parent = TRUE,
+                           exclude_child = TRUE,
+                           exclude_ancestor = FALSE,
+                           exclude_descendant = FALSE,
+                           exclude_distance = 50L,
+                           exclude_inner = FALSE
                            ) {
   ref <- match.arg(ref)
 
@@ -74,12 +85,19 @@ fit_phylotypes <- function(allele_counts,
         min_mix_prop = min_mix_prop,
         min_depth = min_depth,
         max_depth = max_depth,
-        max_p_val = max_p_val,
-        min_rho = 0.95,
-        spike_in_p = 0.01,
-        reoptimise = TRUE,
-        reoptimise_max_iter = 3L,
-        min_sites = min_sites) %>%
+        max_p_val_perm = max_p_val_perm,
+        max_p_val_lrt = max_p_val_lrt,
+        min_rho = min_rho,
+        spike_in_p = spike_in_p,
+        reoptimise = reoptimise,
+        reoptimise_max_iter = reoptimise_max_iter,
+        min_sites = min_sites,
+        exclude_parent = exclude_parent,
+        exclude_child = exclude_child,
+        exclude_ancestor = exclude_ancestor,
+        exclude_descendant = exclude_descendant,
+        exclude_distance = exclude_distance,
+        exclude_inner = exclude_inner) %>%
         mutate(sample_id = rownames(allele_counts)[i])
     }) %>%
     select(sample_id, tidyr::everything())
@@ -87,9 +105,9 @@ fit_phylotypes <- function(allele_counts,
   return(results)
 }
 
-#' @importFrom tidyr replace_na
+#' @importFrom tidyr replace_na chop
 #' @importFrom magrittr "%<>%"
-#' @importFrom dplyr inner_join distinct group_by ungroup as_tibble mutate filter if_else bind_rows tibble first
+#' @importFrom dplyr inner_join distinct group_by ungroup as_tibble mutate filter if_else bind_rows tibble first last
 fit_sample <- function(phylo,
                        gts,
                        pgts,
@@ -98,12 +116,19 @@ fit_sample <- function(phylo,
                        min_mix_prop,
                        min_depth,
                        max_depth,
-                       max_p_val,
+                       max_p_val_perm,
+                       max_p_val_lrt,
                        min_rho,
                        spike_in_p,
                        reoptimise,
                        reoptimise_max_iter,
-                       min_sites) {
+                       min_sites,
+                       exclude_parent,
+                       exclude_child,
+                       exclude_ancestor,
+                       exclude_descendant,
+                       exclude_distance,
+                       exclude_inner) {
 
   # bac = b-allele count, dp = depth, gts = phylotype genotypes, pgts = permutation genotypes
   data <-
@@ -132,71 +157,130 @@ fit_sample <- function(phylo,
   node_dist <- phylo_geno_dist(phylo, magrittr::set_rownames(t(data$gts), node_to_label(phylo, seq_len(Nnode2(phylo)))))
 
   # find the first phylotype
-  res_1 <- score_phy_mix(phylo, data)
+  res_1 <-
+    score_phy_mix(phylo, data) %>%
+    arrange(desc(likelihood), p_val_perm, desc(rho)) %>%
+    filter(! node %in% exclusions(integer(), phylo, node_dist,
+                                  exclude_inner = exclude_inner)) %>%
+    mutate(p_val_lrt = pchisq(-2 * (likelihood - likelihood[1]),
+                              node_dist[node[1], node],
+                              lower.tail = F) %>% replace(1, NA))
+
   res_1_top <-
     res_1 %>%
-    filter(node != root,
-           p_val < max_p_val,
-           rho > min_rho) %>%
-    arrange(desc(likelihood), desc(rho), p_val) %>%
+    filter(node != root, p_val_perm < max_p_val_perm) %>% # rho > min_rho) %>%
     slice(1)
-
-  # Likelihood ratio test to identify similar nodes
-  res_1_lr <-
-    res_1 %>%
-    mutate(lr_df = node_dist[res_1_top$node, node],
-           lr_stat = -2 * ( likelihood - res_1_top$likelihood),
-           lr_p_val = pchisq(lr_stat, nrow(data), lower.tail = F))
-  exclude_lr <- res_1_lr %>% filter(lr_p_val > 0.001) %>% pull(node)
 
   # store the best match in sample_fit
   if (nrow(res_1_top) > 0) {
     sample_fit <-
       res_1_top %>%
-      mutate(mix_n = 1) %>%
-      select(mix_n, node, phylotype, likelihood, p_val, rho) %>%
-      mutate(fit = list(1), abs_diff = Inf)
+      mutate(mix_n = 1, mix_index = 1, mix_prop = 1, search = list(res_1), p_val_lrt = 0) %>%
+      select(mix_n, mix_index, mix_prop, node, phylotype, mix_prop, likelihood, p_val_perm, p_val_lrt, rho, search)
   } else {
     return(tibble(note = "no matches passing filters"))
   }
 
-  i <- 1L
-  while((i < max_phylotypes) & (res$p_val[i] < max_p_val)) {
+  for (i in seq_len(max_phylotypes - 1)) {
+    lh_last <- filter(sample_fit, mix_n == i) %>% pull(likelihood) %>% first()
+    nodes_last <- filter(sample_fit, mix_n == i) %>% pull(node)
+    mix_prop_last <- filter(sample_fit, mix_n == i) %>% pull(mix_prop)
 
     # find next mixture component
-    res_next <- score_phy_mix(phylo = phylo,
-                              data = data,
-                              nodes_fixed = sample_fit$node[[i]],
-                              fit = c_spike_in(sample_fit$fit[[i]], spike_in_p))
+    res_next <-
+      score_phy_mix(phylo = phylo,
+                    data = data,
+                    nodes_fixed = nodes_last,
+                    fit = c_spike_in(mix_prop_last, spike_in_p)) %>%
+      arrange(desc(likelihood), p_val_perm, desc(rho)) %>%
+      filter(!node %in% exclusions(nodes_last, phylo, node_dist,
+                                   exclude_parent = exclude_parent,
+                                   exclude_child = exclude_child,
+                                   exclude_ancestor = exclude_ancestor,
+                                   exclude_descendant = exclude_descendant,
+                                   exclude_distance = exclude_distance,
+                                   exclude_inner = exclude_inner))
+
     res_next_top <-
       res_next %>%
-      # exclude nodes that are too closely related to the previous result
-      filter(! node %in% anc_and_desc(phylo, sample_fit$node[[i]]),
-             ! node %in% c(root, exclude_lr),
-             p_val < max_p_val,
-             rho > min_rho) %>%
-      arrange(desc(likelihood), desc(rho), p_val) %>%
+      filter(p_val_perm < max_p_val_perm) %>% #,rho > min_rho) %>%
       slice(1)
 
     if (nrow(res_next_top) == 0) {
-      # exit gracefully
+      break
     }
 
-    mix_nodes <- c(sample_fit$node[[i]], res_next_top$node)
-    mix_fit <- optim_phy_mix(data, mix_nodes)
+    mix_nodes <- c(nodes_last, res_next_top$node[1])
+    optim_prop_0 <- optim_phy_mix(data, mix_nodes)
+    lrt_p_val <- pchisq(-2 * (lh_last - optim_prop_0$likelihood),
+                        sum(node_dist[last(mix_nodes), setdiff(mix_nodes, last(mix_nodes))]),
+                        lower.tail = F)
+
+    mix_fit <- with(optim_prop_0,
+                    tibble(mix_n = length(nodes),
+                           mix_index = seq_len(mix_n),
+                           mix_prop = prop,
+                           node = nodes,
+                           search = map(node, ~ tibble(phylotype = character(),
+                                                       p_val_perm = numeric(),
+                                                       rho = numeric())),
+                           likelihood = likelihood,
+                           p_val_lrt = lrt_p_val))
+
+    mix_fit$search[[length(mix_nodes)]] <- res_next
 
     # reoptimise existing mixture components in light of new component
-    if (reoptimise) {
+    if (reoptimise && lrt_p_val < max_p_val_lrt) {
       n_iter <- 0L
       n_alt <- 0L
       n_alt_last <- rep(-1L, i+1)
       n_alt_last[i+1] <- 0L
-      while(n_iter <- reoptimise_max_iter) {
+      while(n_iter < reoptimise_max_iter) {
         n_iter <- n_iter + 1L
         change_made <- FALSE
         for (j in seq_along(mix_nodes)) {
           if (n_alt > n_alt_last[j]) {
+            n_alt_last[j] <- n_alt
+            # find highest scoring alternate components
+            mix_fit$search[[j]] <-
+              score_phy_mix(phylo = phylo,
+                            data = data,
+                            nodes_fixed = mix_fit$node[-j],
+                            fit = c(mix_fit$mix_prop[-j], mix_fit$mix_prop[j])) %>%
+              arrange(desc(likelihood), p_val_perm, desc(rho)) %>%
+              filter(!node %in% exclusions(mix_fit$node[-j], phylo, node_dist,
+                                           exclude_parent = exclude_parent,
+                                           exclude_child = exclude_child,
+                                           exclude_ancestor = exclude_ancestor,
+                                           exclude_descendant = exclude_descendant,
+                                           exclude_distance = exclude_distance,
+                                           exclude_inner = exclude_inner)) %>%
+              arrange(desc(likelihood), p_val_perm, desc(rho)) %>%
+              mutate(lrt_p_val = pchisq(-2 * (likelihood - likelihood[1]),
+                                        node_dist[node[1], node],
+                                        lower.tail = F) %>% replace(1, NA))
+              # mutate(lrt_p_val = pchisq(-2 * (likelihood - likelihood[1]), nrow(data), lower.tail = F))
 
+            top <-
+              mix_fit$search[[j]] %>%
+              filter(node != root, p_val_perm < max_p_val_perm, node != mix_fit$node[j]) %>%
+              slice(1)
+
+            if (nrow(top) > 0) {
+              # find maximum likelihood proportion
+              optim_prop <- optim_phy_mix(data,
+                                          nodes = replace(mix_fit$node, j, top$node),
+                                          fit = mix_fit$mix_prop)
+              # accept is proportion is highed than curren
+              if (optim_prop$likelihood > mix_fit$likelihood[1]) {
+                mix_fit %<>%
+                  mutate(likelihood = optim_prop$likelihood,
+                         node = optim_prop$nodes,
+                         mix_prop = optim_prop$prop)
+                change_made <- TRUE
+                n_alt <- n_alt + 1L
+              }
+            }
           }
         }
         # exit if we couldn't find a better solution
@@ -204,53 +288,53 @@ fit_sample <- function(phylo,
       }
     }
 
-    ##################################
-    #  OLD STUFF
-    ##################################
+    mix_fit %<>%
+      mutate(phylotype = node_to_label(phylo, node),
+             p_val_perm = map_dbl(search, ~ .$p_val_perm[1]),
+             rho = map_dbl(search, ~ .$rho[1]))
 
-    res_mix <-
-      match_next(
-        phylo = phylo,
-        nodes_last = res$node[[i]],
-        fit_last = res$fit[[i]],
-        data = data,
-        delta = min_mix_prop,
-        optimise_fit = optimise_fit,
-        max_p_val = max_p_val)
+    sample_fit <- bind_rows(sample_fit, mix_fit)
 
-    res <-
-      res_mix %>%
-      mutate(node = list(c(res$node[[i]], node)),
-             phylotype = list(c(res$phylotype[[i]], phylotype))) %>%
-      { bind_rows(res, .) }
-
-
-    if (FALSE) {
-      node <- first(res$node[[i]])
-      phy_dist <- ape::dist.nodes(phylo)
-      alts <- setdiff(which(phy_dist[node,] < optimise_radius), node)
-      opt_match <- optimise_match(phylo = phylo,
-                                  data = data,
-                                  node = first(res$node[[i]]))
-    }
-
-    i <- i + 1L
-    mod_last <- data$gts[, res$node[[i-1]], drop=FALSE] %>% { colSums(t(.) * res$fit[[i-1]]) }
-    mod_1 <- data$gts[, res$node[[i]], drop=FALSE] %>% { colSums(t(.) * res$fit[[i]]) }
-    res$abs_diff[i] <- sum(abs(mod_last - mod_1), na.rm = T)
-
-    # stop if we haven't found a better solution
-    if (with(res, ( (is.na(p_val[i])) ||
-                    (likelihood[i] <= likelihood[i-1L]) ||
-                    (min(fit[[1]]) < min_mix_prop) ))) {
-      break
-    }
+    min_prop <- filter(sample_fit, mix_n == i+ 1) %>% pull(mix_prop) %>% min()
+    if (min_prop < min_mix_prop || mix_fit$p_val_lrt[1] > max_p_val_lrt) { break }
   }
 
-  result <- arrange(res, desc(likelihood), p_val)
-
-  return(result)
+  return(chop(sample_fit, c(mix_prop, mix_index,node, phylotype, p_val_perm, rho, search)))
 }
+
+#' @importFrom treeio parent child rootnode
+#' @importFrom phangorn Ancestors Descendants
+#' @importFrom purrr map
+exclusions <- function(nodes,
+                       phylo,
+                       node_dist,
+                       exclude_parent = FALSE,
+                       exclude_child = FALSE,
+                       exclude_ancestor = FALSE,
+                       exclude_descendant = FALSE,
+                       exclude_distance = FALSE,
+                       exclude_inner = FALSE,
+                       exclude_self = TRUE,
+                       exclude_root = TRUE) {
+
+
+  exclude <-
+    c(`if`(exclude_parent, parent(phylo, nodes), integer()),
+      `if`(exclude_child, child(phylo, nodes), integer()),
+      `if`(exclude_ancestor, unlist(Ancestors(phylo, nodes)), integer()),
+      `if`(exclude_descendant, unlist(Descendants(phylo, nodes)), integer()),
+      `if`(exclude_root, rootnode(phylo), integer()),
+      `if`(exclude_self, nodes, integer()),
+      `if`(exclude_inner, inner_nodes(phylo), integer()),
+      `if`(!is.null(exclude_distance),
+           unlist(map(nodes, ~ which(node_dist[., ] <= exclude_distance))),
+           integer())) %>%
+    sort() %>%
+    unique()
+
+  return(exclude)
+}
+
 
 #' @importFrom purrr map map_dbl pmap_dbl map2_dbl
 #' @importFrom dplyr inner_join distinct group_by ungroup as_tibble mutate filter summarise
@@ -297,15 +381,17 @@ score_phy_mix <- function(phylo, data, nodes_fixed = integer(0), fit = 1) {
           with(suppressWarnings(cor(depth, lh, method = 'spearman')))
       }))
     }) %>%
-    mutate(p_val = map_dbl(lh, ~ (sum(. < perm_lhs, na.rm = T) + 1) / (length(perm_lhs) + 1))) %>%
+    mutate(p_val = map_dbl(lh, ~ (sum(. < perm_lhs, na.rm = T)) / (length(perm_lhs) + 1))) %>%
     arrange(desc(lh), desc(rho), p_val) %>%
-    select(node, phylotype = label, likelihood = lh, p_val = p_val, rho)
+    select(node, phylotype = label, likelihood = lh, p_val_perm = p_val, rho)
 
   return(result)
 }
 
 # Implements a binary search to optimise phylotype mixture
-#' @importFrom purrr pmap map_dbl
+#' @importFrom purrr pmap map_dbl map_chr
+#' @importFrom tidyr expand_grid
+#' @importFrom magrittr "%T>%"
 optim_phy_mix <- function(data,
                           nodes,
                           fit = NULL,
@@ -336,8 +422,11 @@ optim_phy_mix <- function(data,
   n_iter <- 0L
   coeff <- 1
   search_0 <-
-    tidyr::expand_grid(n1 = seq_along(nodes), n2 = seq_along(nodes)) %>%
+    expand_grid(n1 = seq_along(nodes), n2 = seq_along(nodes)) %>%
     filter(n1 != n2)
+
+  # memoise likelihood computations using a hasmap
+  lh_hash <- hashmap::hashmap(character(), numeric())
 
   while(n_iter < max_iter) {
     n_iter <- n_iter + 1L
@@ -358,11 +447,19 @@ optim_phy_mix <- function(data,
       (function(x) mutate(x, fit_list = pmap(x, function(n1, n2, fit1, fit2, ...) {
         replace(top_fit, c(n1, n2), c(fit1, fit2))
       }))) %>%
-      mutate(lh = map_dbl(fit_list, function(fit_) {
-        (colSums(t_n_gt * (fit_ / resolution ))) %>%
-          force_to_interval() %>%
-          { with(data, binom_likelihood(bac, dp, ., err, by_site = FALSE)) }
-      })) %>%
+      mutate(fit_hash = map_chr(fit_list, ~ digest::digest(.)),
+             lh = lh_hash[[fit_hash]]) %>%
+      (function(x) {
+        # bind_rows(filter(x, !is.na(lh)),
+        filter(x, is.na(lh)) %>%
+          mutate(lh = map_dbl(fit_list, function(fit_) {
+            (colSums(t_n_gt * (fit_ / resolution ))) %>%
+              force_to_interval() %>%
+              { with(data, binom_likelihood(bac, dp, ., err, by_site = FALSE)) }
+          })) %T>% {
+            with(., lh_hash[[fit_hash]] <- lh)
+          }
+      }) %>%
       filter(lh > top_lh) %>%
       arrange(desc(lh), n1, n2) %>%
       slice(1)
@@ -375,7 +472,8 @@ optim_phy_mix <- function(data,
       coeff <- coeff / 2
     }
   }
-  return(list(fit = top_fit / resolution,
+  return(list(nodes = nodes,
+              prop = top_fit / resolution,
               likelihood = top_lh,
               n_iter = n_iter))
 }

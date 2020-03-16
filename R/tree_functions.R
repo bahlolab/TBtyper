@@ -1,6 +1,15 @@
 # TODO
 #   tidy functions, add imports, remove junk
 
+#' @importFrom treeio isTip Nnode2
+tips <- function(phylo) {
+  seq_len(Nnode2(phylo)) %>% { .[isTip(phylo, .)]}
+}
+
+#' @importFrom treeio isTip Nnode2
+inner_nodes <- function(phylo) {
+  seq_len(Nnode2(phylo)) %>% { .[!isTip(phylo, .)] }
+}
 
 # add tbl_tree to class of dataframe
 #' @importFrom rlang is_integerish is_character
