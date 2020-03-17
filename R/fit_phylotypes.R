@@ -127,6 +127,9 @@ fit_sample <- function(phylo,
                        exclude_distance,
                        exclude_inner) {
 
+  # TODO - bring back optim_phylotype as slide_phylotype (could be anywhere between current node, parents and children)
+  #   - give optimised a name like 1.1.2/2_0.34_1.1.2/2/1
+
   # bac = b-allele count, dp = depth, gts = phylotype genotypes, pgts = permutation genotypes
   data <-
     tibble(variant = rownames(sm_allele_counts),
@@ -309,7 +312,7 @@ exclusions <- function(nodes,
                        exclude_child = FALSE,
                        exclude_ancestor = FALSE,
                        exclude_descendant = FALSE,
-                       exclude_distance = FALSE,
+                       exclude_distance = NULL,
                        exclude_inner = FALSE,
                        exclude_self = TRUE,
                        exclude_root = TRUE) {

@@ -25,3 +25,4 @@ get_var_info <- function(ref = c('h37rv', 'mrca')) {
   readRDS(system.file(file.path(str_c(ref, '_phylotypes'), 'var_info.rds'),
                       package = 'TBtyper'))
 }
+
