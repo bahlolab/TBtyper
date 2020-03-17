@@ -172,3 +172,15 @@ comb2_int <- function(x, names = c('a', 'b')) {
     magrittr::set_colnames(names)
 }
 
+log_add <- function (x, y) {
+  .max <- pmax(x, y)
+  .min <- pmin(x, y)
+  .max + log1p(exp(.min - .max))
+}
+
+#' @importFrom purrr reduce
+log_sum <- function(x) {
+  reduce(sort(x, T), function (x, y) x + log1p(exp(y-x)))
+}
+
+

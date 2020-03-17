@@ -20,13 +20,11 @@ fit_phylotypes <- function(allele_counts,
                            spike_in_p = 0.01,
                            reoptimise = TRUE,
                            reoptimise_max_iter = 5L,
-                           optimise_phylotypes = FALSE,
-                           optimise_fit = FALSE,
                            min_sites = 1000L,
                            n_perm = 1000L,
                            exclude_parent = TRUE,
                            exclude_child = TRUE,
-                           exclude_ancestor = FALSE,
+                           exclude_ancestor = TRUE,
                            exclude_descendant = FALSE,
                            exclude_distance = 50L,
                            exclude_inner = FALSE
@@ -52,9 +50,8 @@ fit_phylotypes <- function(allele_counts,
     is_scalar_integerish(max_phylotypes) & max_phylotypes > 0,
     is_scalar_integerish(min_depth) & min_depth > 0,
     is_scalar_integerish(max_depth) & max_depth > 0,
-    is_scalar_proportion(max_p_val),
-    is_bool(optimise_phylotypes),
-    is_bool(optimise_fit),
+    is_scalar_proportion(max_p_val_perm),
+    is_scalar_proportion(max_p_val_lrt),
     is_scalar_integerish(n_perm))
 
   # subset genotypes to those in input allele counts
@@ -153,7 +150,6 @@ fit_sample <- function(phylo,
   # arbitrary threshold on min sites
   if (nrow(data) < min_sites) {  return(tibble(note = "insufficient data"))  }
 
-  root <- rootnode(phylo)
   node_dist <- phylo_geno_dist(phylo, magrittr::set_rownames(t(data$gts), node_to_label(phylo, seq_len(Nnode2(phylo)))))
 
   # find the first phylotype
@@ -168,7 +164,7 @@ fit_sample <- function(phylo,
 
   res_1_top <-
     res_1 %>%
-    filter(node != root, p_val_perm < max_p_val_perm) %>% # rho > min_rho) %>%
+    filter(p_val_perm < max_p_val_perm) %>% # rho > min_rho) %>%
     slice(1)
 
   # store the best match in sample_fit
@@ -263,7 +259,8 @@ fit_sample <- function(phylo,
 
             top <-
               mix_fit$search[[j]] %>%
-              filter(node != root, p_val_perm < max_p_val_perm, node != mix_fit$node[j]) %>%
+              filter(p_val_perm < max_p_val_perm,
+                     node != mix_fit$node[j]) %>%
               slice(1)
 
             if (nrow(top) > 0) {
@@ -302,8 +299,8 @@ fit_sample <- function(phylo,
   return(chop(sample_fit, c(mix_prop, mix_index,node, phylotype, p_val_perm, rho, search)))
 }
 
-#' @importFrom treeio parent child rootnode
-#' @importFrom phangorn Ancestors Descendants
+#' @importFrom treeio parent rootnode
+#' @importFrom phangorn Ancestors Descendants Children
 #' @importFrom purrr map
 exclusions <- function(nodes,
                        phylo,
@@ -320,7 +317,7 @@ exclusions <- function(nodes,
 
   exclude <-
     c(`if`(exclude_parent, parent(phylo, nodes), integer()),
-      `if`(exclude_child, child(phylo, nodes), integer()),
+      `if`(exclude_child, unlist(Children(phylo, nodes)), integer()),
       `if`(exclude_ancestor, unlist(Ancestors(phylo, nodes)), integer()),
       `if`(exclude_descendant, unlist(Descendants(phylo, nodes)), integer()),
       `if`(exclude_root, rootnode(phylo), integer()),
