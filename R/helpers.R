@@ -218,6 +218,17 @@ log_sum <- function(x) {
   reduce(sort(x, T), function (x, y) x + log1p(exp(y-x)))
 }
 
+insert_cols <- function(m1, m2, at) {
+  stopifnot(is.matrix(m1),
+            (is.matrix(m2) && nrow(m1) == nrow(m2)) || (is.vector(m2) && nrow(m1) == length(m2)),
+            nrow(m1) == nrow(m2),
+            is_scalar_integerish(at) && at > 0 && at <= ncol(m1) + 1)
+
+  cbind(m1[, seq_len(at - 1)],
+        `if`(is.matrix(m2), m2, matrix(m2)),
+        m1[, at + seq_len(ncol(m1) - at + 1) - 1])
+}
+
 
 #' @importFrom treeio parent rootnode
 #' @importFrom phangorn Ancestors Descendants Children
