@@ -36,13 +36,7 @@ c_spike_in <- function(p0, p1) {
 
 
 #' @importFrom rlang is_scalar_double is_scalar_integer
-binom_likelihood <- function(x, size, p, err=0.005, by_site = FALSE) {
-  # force p between [0,1] allowing round errors
-  if (! is_proportion(p)) {
-    warning('values outside [0,1] detected\n')
-    p[p < 0] <- 0
-    p[p > 1] <- 1
-  }
+binom_likelihood <- function(x, size, p, err=0, by_site = FALSE) {
   # check args
   stopifnot(
     is_integerish(x),
@@ -141,6 +135,11 @@ fit_mix_prop <- function(data,
 
 }
 
+#' @importFrom dplyr if_else
+flip_at <- function(x, at, states = c(0L, 1L)) {
+  x %>% replace(at, if_else(x[at] == states[1], states[2], states[1]))
+}
+
 fit_proportions_QP <- function(delta,
                                check_ident = F){
 
@@ -219,4 +218,37 @@ log_sum <- function(x) {
   reduce(sort(x, T), function (x, y) x + log1p(exp(y-x)))
 }
 
+
+#' @importFrom treeio parent rootnode
+#' @importFrom phangorn Ancestors Descendants Children
+#' @importFrom purrr map
+exclusions <- function(nodes,
+                       phylo,
+                       node_dist,
+                       exclude_parent = FALSE,
+                       exclude_child = FALSE,
+                       exclude_ancestor = FALSE,
+                       exclude_descendant = FALSE,
+                       exclude_distance = NULL,
+                       exclude_inner = FALSE,
+                       exclude_self = TRUE,
+                       exclude_root = TRUE) {
+
+
+  exclude <-
+    c(`if`(exclude_parent, parent(phylo, nodes), integer()),
+      `if`(exclude_child, unlist(Children(phylo, nodes)), integer()),
+      `if`(exclude_ancestor, unlist(Ancestors(phylo, nodes)), integer()),
+      `if`(exclude_descendant, unlist(Descendants(phylo, nodes)), integer()),
+      `if`(exclude_root, rootnode(phylo), integer()),
+      `if`(exclude_self, nodes, integer()),
+      `if`(exclude_inner, inner_nodes(phylo), integer()),
+      `if`(!is.null(exclude_distance),
+           unlist(map(nodes, ~ which(node_dist[., ] <= exclude_distance))),
+           integer())) %>%
+    sort() %>%
+    unique()
+
+  return(exclude)
+}
 
