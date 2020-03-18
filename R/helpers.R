@@ -62,6 +62,42 @@ binom_likelihood <- function(x, size, p, err=0.005, by_site = FALSE) {
   }
 }
 
+#' @importFrom phangorn Children
+#' @importFrom treeio parent
+parent_and_children <- function(phylo, node) {
+  unlist(c(parent(phylo, node), unlist(Children(phylo, node))))
+}
+
+node_dist_range <- function(node, phylo, node_dist, max_dist,
+                            inclusive = TRUE,
+                            nodes_exclude = integer()) {
+
+  nodes <- which(node_dist[node, ] <= max_dist)
+
+  if (inclusive) {
+    nodes <- union(nodes, parent_and_children(phylo, node))
+  }
+
+  nodes <- setdiff(nodes, union(node, nodes_exclude))
+
+  dist_rem <- max_dist - node_dist[node, nodes]
+
+  if( inclusive && any(dist_rem > 0)) {
+    nodes <-
+      map(which(dist_rem > 0),
+          function(i) node_dist_range(node = nodes[i],
+                                      phylo = phylo,
+                                      node_dist = node_dist,
+                                      max_dist = dist_rem[i],
+                                      inclusive = inclusive,
+                                      nodes_exclude = c(nodes, node, nodes_exclude))
+      ) %>%
+      unlist() %>%
+      union(., nodes)
+  }
+  return(sort(nodes))
+}
+
 #' @importFrom phangorn Ancestors Descendants
 anc_and_desc <- function(phylo, node) {
   unlist(c(Ancestors(phylo, node), unlist(Descendants(phylo, node))))
