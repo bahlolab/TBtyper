@@ -15,7 +15,7 @@ fit_phylotypes <- function(allele_counts,
                            min_depth = 50L,
                            max_depth = 250L,
                            max_p_val_perm = 0.001,
-                           max_p_val_lrt = 0.001,
+                           max_p_val_wsrst = 0.001,
                            spike_in_p = 0.01,
                            reoptimise = TRUE,
                            reoptimise_max_iter = 5L,
@@ -30,7 +30,6 @@ fit_phylotypes <- function(allele_counts,
                            fuzzy_phylotypes = TRUE,
                            fuzzy_max_dist = 100L
                            ) {
-  ref <- match.arg(ref)
 
   if (is.null(phylo)) {
     phylo <- get_phylo(ref = ref)
@@ -52,7 +51,7 @@ fit_phylotypes <- function(allele_counts,
     is_scalar_integerish(min_depth) & min_depth > 0,
     is_scalar_integerish(max_depth) & max_depth > 0,
     is_scalar_proportion(max_p_val_perm),
-    is_scalar_proportion(max_p_val_lrt),
+    is_scalar_proportion(max_p_val_wsrst),
     is_scalar_integerish(n_perm))
 
   # subset genotypes to those in input allele counts
@@ -87,7 +86,7 @@ fit_phylotypes <- function(allele_counts,
         min_depth = min_depth,
         max_depth = max_depth,
         max_p_val_perm = max_p_val_perm,
-        max_p_val_lrt = max_p_val_lrt,
+        max_p_val_wsrst = max_p_val_wsrst,
         spike_in_p = spike_in_p,
         reoptimise = reoptimise,
         reoptimise_max_iter = reoptimise_max_iter,
@@ -122,7 +121,7 @@ fit_sample <- function(phylo,
                        min_depth,
                        max_depth,
                        max_p_val_perm,
-                       max_p_val_lrt,
+                       max_p_val_wsrst,
                        spike_in_p,
                        reoptimise,
                        reoptimise_max_iter,
@@ -187,9 +186,9 @@ fit_sample <- function(phylo,
     sample_fit <-
       res_1_top %>%
       mutate(mix_n = 1, mix_index = 1, mix_prop = 1, search = list(res_1),
-             p_val_lrt = 0, fuzzy_sites = list(integer()), abs_diff = Inf) %>%
+             p_val_wsrst = 0, fuzzy_sites = list(integer()), abs_diff = Inf) %>%
       select(mix_n, mix_index, mix_prop, node, phylotype, mix_prop, likelihood,
-             p_val_perm, p_val_lrt, abs_diff, search, fuzzy_sites)
+             p_val_perm, p_val_wsrst, abs_diff, search, fuzzy_sites)
 
     if (fuzzy_phylotypes) {
       # find sites that differ in neighbouring nodes and may be incorrect in the model
@@ -233,28 +232,22 @@ fit_sample <- function(phylo,
     node_next <- res_next %>% filter(p_val_perm < max_p_val_perm) %>% pull(node) %>% first()
     # stop if we havent found a new candidate node
     if (is.na(node_next)) { break }
-
+    # optimise mixture proportions
     optim_prop <- optim_phy_mix(data, mix_gts = cbind(mix_gts_last, phy_gts[, node_next]))
-    n_diff_next <-
-      map_int(seq_len(ncol(mix_gts_last)), ~ sum(mix_gts_last[, .] != phy_gts[, node_next])) %>%
-      sum(na.rm = TRUE)
-    lrt_p_val <- pchisq(-2 * (lh_last - optim_prop$likelihood), n_diff_next, lower.tail = F)
-
-    wsrst <- {
-      sites_diff <-
-        map(seq_len(ncol(mix_gts_last)), ~ which(mix_gts_last[, .] != phy_gts[, node_next])) %>%
-        unlist() %>% sort() %>% unique()
-      lh0 <- mix_likelihood(data[sites_diff,],
-                            mix_model(mix_gts_last[sites_diff, , drop=F],
-                                      mix_prop_last),
-                            by_site = TRUE)
-      lh1 <- mix_likelihood(data[sites_diff,],
-                            mix_model(cbind(mix_gts_last[sites_diff, , drop=F], phy_gts[sites_diff, node_next]),
-                                      c_spike_in(mix_prop_last, spike_in_p)),
-                            by_site = TRUE)
-      p_val <- wilcox.test(lh0, lh1, paired = TRUE, alternative = 'less')$p.value
-      print(str_c('p_val_lrt: ', lrt_p_val, ', p_val_wsrst: ', p_val))
-    }
+    # calculate wilcox signed rank sum p value
+    # probably should allow fuzziness for this test too
+    sites_diff <-
+      map(seq_len(ncol(mix_gts_last)), ~ which(mix_gts_last[, .] != phy_gts[, node_next])) %>%
+      unlist() %>% sort() %>% unique()
+    lh0 <- mix_likelihood(data[sites_diff,],
+                          mix_model(mix_gts_last[sites_diff, , drop=F],
+                                    mix_prop_last),
+                          by_site = TRUE)
+    lh1 <- mix_likelihood(data[sites_diff,],
+                          mix_model(cbind(mix_gts_last[sites_diff, , drop=F], phy_gts[sites_diff, node_next]),
+                                    optim_prop$prop),
+                          by_site = TRUE)
+    p_val_wsrst <- wilcox.test(lh0, lh1, paired = TRUE, alternative = 'less')$p.value
 
     mix_fit <-
       sample_fit %>%
@@ -266,8 +259,8 @@ fit_sample <- function(phylo,
              search = map(node, ~ tibble(phylotype = character(),
                                          p_val_perm = numeric())),
              likelihood = optim_prop$likelihood,
-             p_val_lrt = lrt_p_val) %>%
-      select(mix_n, mix_index, mix_prop, node, likelihood, p_val_lrt, search, fuzzy_sites)
+             p_val_wsrst = p_val_wsrst) %>%
+      select(mix_n, mix_index, mix_prop, node, likelihood, p_val_wsrst, search, fuzzy_sites)
 
     mix_fit$search[[i + 1]] <- res_next
 
@@ -283,7 +276,7 @@ fit_sample <- function(phylo,
     }
 
     # reoptimise existing mixture components in light of new component
-    if (reoptimise && lrt_p_val < max_p_val_lrt) {
+    if (reoptimise && p_val_wsrst < max_p_val_wsrst) {
       n_iter <- 0L
       n_alt <- 0L
       n_alt_last <- rep(-1L, i+1)
@@ -353,7 +346,7 @@ fit_sample <- function(phylo,
       mutate(phylotype = node_to_label(phylo, node),
              p_val_perm = map_dbl(search, ~ .$p_val_perm[1]))
 
-    if (min(mix_fit$mix_prop) < min_mix_prop || mix_fit$p_val_lrt[1] > max_p_val_lrt) { break }
+    if (min(mix_fit$mix_prop) < min_mix_prop || mix_fit$p_val_wsrst[1] > max_p_val_wsrst) { break }
 
     model_current <-
       mix_fit %>%
