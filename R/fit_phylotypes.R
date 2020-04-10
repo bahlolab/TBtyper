@@ -73,11 +73,11 @@ fit_phylotypes <- function(allele_counts,
            function (i) { rbinom(n_perm, 1, rate[i]) },
            integer(n_perm)) %>% t()
 
-  readr::write_tsv(tibble(event = character(), index = integer()), 'tbt_log.tsv')
+  readr::write_tsv(tibble(event = character(), index = integer()), '.tbt_log.tsv')
   results <-
     seq_len(nrow(allele_counts)) %>%
     furrr::future_map_dfr(function(i) {
-      readr::write_tsv(tibble(event = 'start', index = i), 'tbt_log.tsv', append = T)
+      readr::write_tsv(tibble(event = 'start', index = i), '.tbt_log.tsv', append = T)
       fit_sample(
         phylo = phylo_sub,
         gts = t_geno,
@@ -103,7 +103,7 @@ fit_phylotypes <- function(allele_counts,
         fuzzy_max_dist = fuzzy_max_dist,
         error_rate = error_rate) %>%
         mutate(sample_id = rownames(allele_counts)[i]) %T>% {
-          readr::write_tsv(tibble(event = 'end', index = i), 'tbt_log.tsv', append = T)
+          readr::write_tsv(tibble(event = 'end', index = i), '.tbt_log.tsv', append = T)
         }
     }) %>%
     select(sample_id, tidyr::everything())
