@@ -6,13 +6,11 @@
 #' @importFrom magrittr "%>%"
 get_allele_counts_gds <- function(gds,
                                   var_info = NULL,
-                                  ref = c('h37rv', 'mrca'),
                                   verbose = FALSE,
                                   max_ext_freq = 0.25) {
 
   if (is.null(var_info)) {
-    ref <- match.arg(ref)
-    var_info <- get_var_info(ref = ref)
+    var_info <- get_var_info()
   }
 
   # check_args

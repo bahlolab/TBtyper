@@ -280,3 +280,19 @@ exclusions <- function(nodes,
   return(exclude)
 }
 
+#' @importFrom hashmap hashmap
+hash_set <- function(.keys = character()) {
+  hashmap::hashmap(as.character(.keys), rep(TRUE, length(.keys)))
+}
+
+hs_add <- function(hs, keys) {
+  hs[[keys]] <- rep(TRUE, length(keys))
+  hs
+}
+
+#' @importFrom tidyr replace_na
+hs_contains <- function(hs, keys) {
+  stopifnot(inherits(hs, 'Rcpp_Hashmap'))
+  replace_na(hs[[keys]], FALSE)
+}
+

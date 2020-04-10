@@ -9,7 +9,6 @@
 fit_phylotypes <- function(allele_counts,
                            phylo = NULL,
                            geno = NULL,
-                           ref = c('h37rv', 'mrca'),
                            max_phylotypes = 5L,
                            min_mix_prop = 0.005,
                            min_depth = 50L,
@@ -33,11 +32,11 @@ fit_phylotypes <- function(allele_counts,
                            ) {
 
   if (is.null(phylo)) {
-    phylo <- get_phylo(ref = ref)
+    phylo <- get_phylo()
   }
 
   if (is.null(geno)) {
-    geno <- get_geno(ref = ref)
+    geno <- get_geno()
   }
 
   # check args
@@ -115,6 +114,7 @@ fit_phylotypes <- function(allele_counts,
 #' @importFrom magrittr "%<>%"
 #' @importFrom dplyr inner_join distinct group_by ungroup as_tibble mutate filter if_else bind_rows tibble first last
 #' @importFrom purrr map_int
+#' @importFrom stringr str_c
 fit_sample <- function(phylo,
                        gts,
                        pgts,
@@ -139,10 +139,6 @@ fit_sample <- function(phylo,
                        fuzzy_max_dist,
                        error_rate) {
 
-  # TODO - bring back optim_phylotype as slide_phylotype (could be anywhere between current node, parents and children)
-  #   - give optimised a name like 1.1.2/2_0.34_1.1.2/2/1
-
-  # bac = b-allele count, dp = depth, gts = phylotype genotypes, pgts = permutation genotypes
   data <-
     tibble(variant = rownames(sm_allele_counts),
            bac = sm_allele_counts[,'Alt'],
@@ -165,6 +161,7 @@ fit_sample <- function(phylo,
   # arbitrary threshold on min sites
   if (nrow(data) < min_sites) {  return(tibble(note = "insufficient data"))  }
 
+  # TODO - move this up 1 level to aviod recalculating
   node_dist <- phylo_geno_dist(phylo, t(phy_gts))
 
   # find the first phylotype
@@ -174,7 +171,6 @@ fit_sample <- function(phylo,
     arrange(desc(likelihood), p_val_perm) %>%
     filter(! node %in% exclusions(integer(), phylo, node_dist,
                                   exclude_inner = exclude_inner))
-
   res_1_top <-
     res_1 %>%
     filter(p_val_perm < max_p_val_perm) %>% # rho > min_rho) %>%
@@ -545,14 +541,15 @@ optim_fuzzy_search <- function(data, mix_gts, gts_neighb, dist_neighb, prop, max
 }
 
 # Implements a binary search to optimise phylotype mixture
-#' @importFrom purrr pmap map_dbl map_chr
+#' @importFrom purrr pmap map_dbl map_chr map_df map2_lgl
 #' @importFrom tidyr expand_grid
+#' @importFrom dplyr arrange_all transmute
 #' @importFrom magrittr "%T>%"
 optim_phy_mix <- function(data,
                           mix_gts,
                           error_rate,
                           fit = NULL,
-                          resolution = 5000L,
+                          resolution = 10000L,
                           max_iter = 1000L) {
 
   stopifnot(is.data.frame(data),
@@ -568,79 +565,100 @@ optim_phy_mix <- function(data,
   }
 
   # sites that differ between mixture componenets
-  sites_diff <- rowSums(mix_gts) %>% { which(. > 0 & . < ncol(mix_gts)) }
+  mix_n <- ncol(mix_gts)
+  sites_diff <- rowSums(mix_gts) %>% { which(. > 0 & . < mix_n) }
   data_sub <- data[sites_diff, ]
+  mgt_sub <- mix_gts[sites_diff, , drop=FALSE]
   t_m_gt <- t(mix_gts[sites_diff, , drop=FALSE])
 
   # likelihood at sites that don't differ in mixture
   lh_same <-
     `if`(length(sites_diff) < nrow(data),
-         with(data[-sites_diff, ], binom_likelihood(bac, dp, mix_gts[-sites_diff, 1], error_rate)),
+         mix_likelihood(data[-sites_diff, ], mix_gts[-sites_diff, 1], error_rate = error_rate, by_site = FALSE),
          0)
 
-  fit_0 <- as.integer(fit * resolution)
-  resolution <- sum(fit_0)
-  top_lh <-
-    (colSums(t_m_gt * (fit_0 / resolution ))) %>%
-    force_to_interval() %>%
-    { with(data_sub, binom_likelihood(bac, dp, ., error_rate, by_site = FALSE)) }
-  top_fit <- fit_0
+  top_fit <- as.integer(fit * resolution)
+  resolution <- sum(top_fit)
+  top_lh <- mix_likelihood(data_sub, mix_model(mgt_sub, top_fit / resolution), error_rate = error_rate, by_site = FALSE)
 
-  n_iter <- 0L
-  coeff <- 1
+  # set of possible directions to search
   search_0 <-
-    expand_grid(n1 = seq_len(ncol(mix_gts)), n2 = seq_len(ncol(mix_gts))) %>%
-    filter(n1 != n2)
+    as.character(seq_len(mix_n)) %>%
+    setNames(., .) %>%
+    map(~ c(TRUE, FALSE)) %>%
+    do.call('expand_grid', .) %>%
+    mutate(state = seq_len(n())) %>%
+    gather(-state, key = 'node', value = 'is_on') %>%
+    arrange(state, node) %>%
+    group_by(state) %>%
+    filter(any(is_on)) %>%
+    summarise(nodes = list(which(is_on))) %>%
+    with(expand_grid(nodes_1 = nodes, nodes_2 = nodes)) %>%
+    filter(purrr::map2_lgl(nodes_1, nodes_2, ~ length(intersect(.x, .y)) == 0)) %>%
+    mutate(n_1 = lengths(nodes_1),
+           n_2 = lengths(nodes_2),
+           lcm = pracma::Lcm(n_1, n_2))
 
   # memoise likelihood computations using a hasmap
-  lh_hash <- hashmap::hashmap(character(), numeric())
+  hs <- hash_set()
+  n_iter <- 0L
+  coeff <- 1
+  converged <- FALSE
+  # lh_path <- rep(NA_real_, max_iter + 1)
+  # new_states <- rep(0L, max_iter + 1)
 
   while(n_iter < max_iter) {
     n_iter <- n_iter + 1L
+    # lh_path[n_iter] <- top_lh
 
-    search <-
+    search_1 <-
       search_0 %>%
-      mutate(fit1 = top_fit[n1],
-             fit2 = top_fit[n2],
-             delta = as.integer(round(coeff * fit1)),
-             fit1 = fit1 - delta,
-             fit2 = fit2 + delta) %>%
+      mutate(max_delta = coeff * map_int(nodes_1, ~ min(top_fit[.]) * length(.)),
+             delta = as.integer(max_delta - (max_delta %% lcm))) %>%
       filter(delta > 0)
 
-    if (nrow(search) == 0) { break }
+    if (nrow(search_1) == 0) {
+      # no remaining states to test
+      converged <- TRUE
+      break
+    }
 
-    top_res <-
-      search %>%
-      (function(x) mutate(x, fit_list = pmap(x, function(n1, n2, fit1, fit2, ...) {
-        replace(top_fit, c(n1, n2), c(fit1, fit2))
-      }))) %>%
-      mutate(fit_hash = map_chr(fit_list, ~ digest::digest(.)),
-             lh = lh_hash[[fit_hash]]) %>%
-      (function(x) {
-        filter(x, is.na(lh)) %>%
-          mutate(lh = map_dbl(fit_list, function(fit_) {
-            (colSums(t_m_gt * (fit_ / resolution ))) %>%
-              force_to_interval() %>%
-              { with(data_sub, binom_likelihood(bac, dp, ., error_rate, by_site = FALSE)) }
-          })) %T>% {
-            with(., lh_hash[[fit_hash]] <- lh)
-          }
-      }) %>%
-      filter(lh > top_lh) %>%
-      arrange(desc(lh), n1, n2) %>%
-      slice(1)
+    search_2 <-
+      search_1 %>%
+      transmute(
+        fit = pmap(., function(nodes_1, nodes_2, n_1, n_2, delta, ...) {
+          x <- top_fit
+          x[nodes_1] %<>% { . - delta / n_1 }
+          x[nodes_2] %<>% { . + delta / n_2 }
+          return(as.integer(x)) }),
+        fit_hash = map_chr(fit, ~ digest::digest(.))) %>%
+      filter(!hs_contains(hs, fit_hash)) %>%
+      group_by(fit_hash) %>%
+      slice(1) %>%
+      ungroup() %>%
+      mutate(lh = map_dbl(fit, function(fit_) {
+        mix_likelihood(data_sub, mix_model(mgt_sub, fit_ / resolution), error_rate = error_rate, by_site = FALSE)
+      }))
+    # add hashes to search set so we don't search again
+    # new_states[n_iter] <- nrow(search_2)
+    hs <- hs_add(hs, search_2$fit_hash)
 
-    if (nrow(top_res) > 0) {
-      top_fit <- top_res$fit_list[[1]]
-      top_lh <- top_res$lh[[1]]
-      coeff <- 1
-    } else {
+    search_2 %<>% filter(lh > top_lh) %>% arrange(desc(lh))
+
+    if (nrow(search_2) == 0) {
+      # try again, reducing coeff by half
       coeff <- coeff / 2
+    } else {
+      # accept new best solution, reset coeff
+      top_fit <- search_2$fit[[1]]
+      top_lh <- search_2$lh[[1]]
+      coeff <- 1
     }
   }
   return(list(prop = top_fit / resolution,
               likelihood = top_lh + lh_same,
-              n_iter = n_iter))
+              n_iter = n_iter,
+              converged = converged))
 }
 
 
