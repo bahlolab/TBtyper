@@ -243,10 +243,12 @@ fit_sample <- function(phylo,
     lh0 <- mix_likelihood(data[sites_diff,],
                           mix_model(mix_gts_last[sites_diff, , drop=F],
                                     mix_prop_last),
+                          error_rate = error_rate,
                           by_site = TRUE)
     lh1 <- mix_likelihood(data[sites_diff,],
                           mix_model(cbind(mix_gts_last[sites_diff, , drop=F], phy_gts[sites_diff, node_next]),
                                     optim_prop$prop),
+                          error_rate = error_rate,
                           by_site = TRUE)
     p_val_wsrst <- suppressWarnings(
       wilcox.test(lh0, lh1, paired = TRUE, alternative = 'less')$p.value
@@ -553,8 +555,6 @@ optim_phy_mix <- function(data,
                           resolution = 5000L,
                           max_iter = 1000L) {
 
-  ## TODO - only optimise over sites where nodes have different phylotypes
-
   stopifnot(is.data.frame(data),
             is.matrix(mix_gts),
             nrow(mix_gts) == nrow(data),
@@ -567,10 +567,12 @@ optim_phy_mix <- function(data,
     fit <- rep(1 / ncol(mix_gts), ncol(mix_gts))
   }
 
+  # sites that differ between mixture componenets
   sites_diff <- rowSums(mix_gts) %>% { which(. > 0 & . < ncol(mix_gts)) }
   data_sub <- data[sites_diff, ]
   t_m_gt <- t(mix_gts[sites_diff, , drop=FALSE])
 
+  # likelihood at sites that don't differ in mixture
   lh_same <-
     `if`(length(sites_diff) < nrow(data),
          with(data[-sites_diff, ], binom_likelihood(bac, dp, mix_gts[-sites_diff, 1], error_rate)),
@@ -641,14 +643,4 @@ optim_phy_mix <- function(data,
               n_iter = n_iter))
 }
 
-mix_likelihood <- function(data, model, error_rate, by_site = FALSE) {
-  with(data, binom_likelihood(bac, dp, model, error_rate, by_site = by_site))
-}
 
-mix_model <- function(gts, mix_prop) {
-  stopifnot(is.matrix(gts),
-            is_proportion(mix_prop),
-            ncol(gts) == length(mix_prop))
-
-  force_to_interval(colSums(t(gts) * mix_prop))
-}

@@ -36,7 +36,7 @@ c_spike_in <- function(p0, p1) {
 
 
 #' @importFrom rlang is_scalar_double is_scalar_integer
-binom_likelihood <- function(x, size, p, err=0, by_site = FALSE) {
+binom_likelihood <- function(x, size, p, err, by_site = FALSE) {
   # check args
   stopifnot(
     is_integerish(x),
@@ -54,6 +54,23 @@ binom_likelihood <- function(x, size, p, err=0, by_site = FALSE) {
   } else {
     return(sum(res, na.rm=TRUE))
   }
+}
+
+mix_likelihood <- function(data, model, error_rate, by_site = FALSE) {
+
+  stopifnot(all(c('bac', 'dp') %in% colnames(data)),
+            nrow(data) == length(model))
+
+  with(data, binom_likelihood(bac, dp, model, error_rate, by_site = by_site))
+}
+
+mix_model <- function(gts, mix_prop) {
+
+  stopifnot(is.matrix(gts),
+            is_proportion(mix_prop),
+            ncol(gts) == length(mix_prop))
+
+  force_to_interval(colSums(t(gts) * mix_prop), min_val = 0, max_val = 1)
 }
 
 #' @importFrom phangorn Children
