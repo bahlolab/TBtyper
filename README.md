@@ -44,7 +44,7 @@ filtered_results <-
   filter(map_lgl(mix_prop, ~ min(.) > 0.01),
          abs_diff > 5,
          p_val_wsrst < 0.001,
-         mix_n <= 2) %>% 
+         mix_n <= 3) %>% 
   group_by(sample_id) %>% 
   slice(which.max(mix_n)) %>% 
   ungroup() %>% 
