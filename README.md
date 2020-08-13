@@ -15,6 +15,7 @@ devtools::install_github("bahlolab/TBtyper")
 2) Extract allele counts from GDS
 3) Fit phylotypes using TBtyper
 4) Filter results
+5) Save Results
 ```R
 library(tidyverse)
 library(SeqArray)
@@ -40,10 +41,16 @@ results <- fit_phylotypes(allele_counts)
 # 4) Filter for best match per sample
 filtered_results <- 
   results %>% 
-  filter(p_val < 0.001, abs_diff > 10) %>%
-  group_by(sample_id) %>%
-  arrange(desc(likelihood)) %>%
-  slice(1) %>%
-  ungroup()
-
+  filter(map_lgl(mix_prop, ~ min(.) > 0.01),
+         abs_diff > 5,
+         p_val_wsrst < 0.001,
+         mix_n <= 2) %>% 
+  group_by(sample_id) %>% 
+  slice(which.max(mix_n)) %>% 
+  ungroup() %>% 
+  unnest_legacy() %>% 
+  select(sample_id, mix_n, mix_prop, phylotype)
+  
+# 5) Save CSV
+write_csv(filtered_results, 'TBtyper_results_filtered.csv')
 ```
