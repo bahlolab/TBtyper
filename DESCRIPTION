@@ -1,5 +1,5 @@
 Package: TBtyper
-Title: MTBC Phylotyping from WGS SNP genotypes
+Title: Mycobacterium Tuberculosis Phylotyping from WGS SNP data
 Version: 0.0.1
 Authors@R: 
     person(given = "Jacob",
@@ -7,7 +7,7 @@ Authors@R:
            role = c("aut", "cre"),
            email = "munro.j@wehi.edu.au",
            comment = c(ORCID = "0000-0002-2751-0989"))
-Description: MTBC Phylotyping from WGS SNP genotypes.
+Description: Mycobacterium Tuberculosis phylotyping from WGS SNP data.
 License: GPLv2
 Encoding: UTF-8
 LazyData: true
@@ -30,7 +30,9 @@ Imports:
     SeqVarTools,
     IRanges,
     quadprog,
-    RhpcBLASctl
+    RhpcBLASctl,
+    hashmap,
+    pracma
 RoxygenNote: 6.1.1
 Suggests: 
     testthat (>= 2.1.0)
