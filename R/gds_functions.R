@@ -4,6 +4,7 @@
 #' @importFrom SeqVarTools variantInfo
 #' @importFrom dplyr inner_join distinct group_by ungroup as_tibble mutate filter arrange rename
 #' @importFrom magrittr "%>%"
+#' @importFrom tidyr spread
 get_allele_counts_gds <- function(gds,
                                   var_info = NULL,
                                   verbose = FALSE,

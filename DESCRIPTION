@@ -14,26 +14,25 @@ LazyData: true
 ByteCompile: true
 biocViews:
 Imports:
-    GenomicRanges,
+    ape,
     dplyr,
     furrr,
     future,
     ggplot2,
+    GenomicRanges,
+    IRanges,
     magrittr,
+    phangorn,
     purrr,
+    pracma,
     rlang,
     rmarkdown,
     stringr,
+    SeqVarTools,
+    SeqArray,
     tidyr,
     tidytree,
-    treeio,
-    ape,
-    phangorn,
-    SeqVarTools,
-    IRanges,
-    quadprog,
-    RhpcBLASctl,
-    pracma
+    treeio
 RoxygenNote: 6.1.1
 Suggests: 
     testthat (>= 2.1.0)
