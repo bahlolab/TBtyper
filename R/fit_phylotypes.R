@@ -600,7 +600,7 @@ optim_phy_mix <- function(data,
            lcm = pracma::Lcm(n_1, n_2))
 
   # memoise likelihood computations using a hasmap
-  hs <- hash_set()
+  hashes <- character()
   n_iter <- 0L
   coeff <- 1
   converged <- FALSE
@@ -632,7 +632,7 @@ optim_phy_mix <- function(data,
           x[nodes_2] %<>% { . + delta / n_2 }
           return(as.integer(x)) }),
         fit_hash = map_chr(fit, ~ digest::digest(.))) %>%
-      filter(!hs_contains(hs, fit_hash)) %>%
+      filter(!fit_hash %in% hashes) %>%
       group_by(fit_hash) %>%
       slice(1) %>%
       ungroup() %>%
@@ -641,7 +641,7 @@ optim_phy_mix <- function(data,
       }))
     # add hashes to search set so we don't search again
     # new_states[n_iter] <- nrow(search_2)
-    hs <- hs_add(hs, search_2$fit_hash)
+    hashes <- union(hashes, search_2$fit_hash)
 
     search_2 %<>% filter(lh > top_lh) %>% arrange(desc(lh))
 

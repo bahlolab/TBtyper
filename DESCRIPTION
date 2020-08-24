@@ -12,6 +12,7 @@ License: GPLv2
 Encoding: UTF-8
 LazyData: true
 ByteCompile: true
+biocViews:
 Imports:
     GenomicRanges,
     dplyr,
@@ -27,11 +28,11 @@ Imports:
     tidytree,
     treeio,
     ape,
+    phangorn,
     SeqVarTools,
     IRanges,
     quadprog,
     RhpcBLASctl,
-    hashmap,
     pracma
 RoxygenNote: 6.1.1
 Suggests: 
